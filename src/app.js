@@ -102,7 +102,7 @@ function renderProfile(draft = profileDraft) {
       ${section.records.map((record, index) => `<div class="profile-record" data-record="${section.id}:${index}">${section.id !== 'personal' ? `<div class="record-title"><span>第 ${index + 1} 段</span><button type="button" class="text-button danger" data-remove-record="${section.id}:${index}" aria-label="删除${esc(section.title)}第 ${index + 1} 段">删除记录</button></div>` : ''}
       <div class="profile-fields">${fieldsForRecord(draft, section.id, index).map(field => `<div class="profile-field ${field.id === 'description' ? 'wide' : ''}" data-profile-field="${field.id}">
       <button type="button" class="delete-field" data-delete-field="${section.id}:${index}:${field.id}" aria-label="删除${esc(field.label)}" title="删除小标题及内容">×</button>
-      ${field.builtin ? `<label>${esc(field.label)}${field.id === 'description' ? `<textarea data-profile-input="base" data-group="${section.id}" data-index="${index}" data-field="${field.id}" name="${section.id}:${index}:${field.id}" rows="3" maxlength="5000">${esc(field.value)}</textarea>` : `<input data-profile-input="base" data-group="${section.id}" data-index="${index}" data-field="${field.id}" name="${section.id}:${index}:${field.id}" type="${field.type === 'date' ? 'month' : field.type === 'email' ? 'email' : 'text'}" value="${esc(field.value)}" maxlength="5000">`}</label>` : `<label>小标题<input data-profile-input="label" data-group="${section.id}" data-index="${index}" data-field="${field.id}" value="${esc(field.label)}" aria-label="${esc(field.label)}小标题" maxlength="80" required></label><label>内容<textarea data-profile-input="value" data-group="${section.id}" data-index="${index}" data-field="${field.id}" aria-label="${esc(field.label)}内容" rows="2" maxlength="5000">${esc(field.value)}</textarea></label>`}
+      ${field.builtin ? `<label>${esc(field.label)}${field.id === 'description' ? `<textarea data-profile-input="base" data-group="${section.id}" data-index="${index}" data-field="${field.id}" name="${section.id}:${index}:${field.id}" rows="3" maxlength="5000">${esc(field.value)}</textarea>` : `<input data-profile-input="base" data-group="${section.id}" data-index="${index}" data-field="${field.id}" name="${section.id}:${index}:${field.id}" type="${field.type === 'date' ? 'month' : field.type === 'email' ? 'email' : 'text'}" value="${esc(field.value)}" maxlength="5000">`}</label>` : `<label><span class="field-title">${esc(field.label)}</span><textarea data-profile-input="value" data-group="${section.id}" data-index="${index}" data-field="${field.id}" aria-label="${esc(field.label)}内容" rows="2" maxlength="5000">${esc(field.value)}</textarea></label>`}
       </div>`).join('') || '<p class="muted">还没有信息，可在下方添加。</p>'}</div>
       <details class="information-adder"><summary>＋ 添加信息</summary><div class="new-field-form"><label>小标题<input data-new-label placeholder="例如：是否有实习证明" maxlength="80"></label><label>内容<textarea data-new-value placeholder="例如：是" rows="2" maxlength="5000"></textarea></label><button type="button" class="button secondary" data-add-field="${section.id}:${index}">添加信息</button></div></details>
       </div>`).join('') || '<p class="muted">还没有记录，点击右上角添加。</p>'}</section>`).join('')}
@@ -133,7 +133,7 @@ function collectProfile() {
     if (el.dataset.profileInput === 'base') record[el.dataset.field] = el.value;
     else {
       const field = (section.custom ? record.fields : record.extraFields).find(field => field.id === el.dataset.field);
-      field[el.dataset.profileInput] = el.value;
+      if (el.dataset.profileInput === 'value') field.value = el.value;
     }
   }
   return draft;
@@ -309,14 +309,6 @@ document.querySelector('#app').addEventListener('click', async event => {
     }
   } catch (error) { notice(error.name === 'TimeoutError' ? '模型请求超时，可继续手动选择档案字段。' : error.message || '操作失败，请重试。', true); }
   finally { busy = false; renderPreview(); }
-});
-document.querySelector('#app').addEventListener('input', event => {
-  const el = event.target;
-  if (el.dataset.profileInput === 'label') {
-    for (const other of document.querySelectorAll('[data-profile-input=label]')) {
-      if (other.dataset.group === el.dataset.group && other.dataset.field === el.dataset.field) other.value = el.value;
-    }
-  }
 });
 document.querySelector('#app').addEventListener('change', event => {
   if (busy) return;
