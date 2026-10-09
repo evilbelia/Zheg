@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "折桂 Zheg · 网申填写助手",
+  "version": "0.1.0",
+  "description": "本地个人档案，识别网申字段，预览确认后填写。",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting", "storage", "sidePanel"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "action": { "default_title": "打开折桂填写助手" },
+  "side_panel": { "default_path": "workspace.html" },
+  "background": { "service_worker": "background.js" },
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'self'" }
+}
