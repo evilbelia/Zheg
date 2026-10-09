@@ -42,18 +42,78 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     await expect(form.locator('#application-form input[name=applicantName]')).toHaveValue('林知夏');
     await expect(form.locator('#application-form input[name=school2]')).toHaveValue('杭州电子科技大学');
     await expect(form.locator('#application-form select[name=degree1]')).toHaveValue('master');
+    let modelCalls = 0;
+    await context.route('http://127.0.0.1:5188/mock/chat/completions', async route => {
+      expect(route.request().headers().authorization).toBe('Bearer fake-extension-key');
+      const body = route.request().postDataJSON();
+      let content = 'OK';
+      if (body.messages[0].content !== 'Reply with OK.') {
+        modelCalls++;
+        const payload = JSON.parse(body.messages[1].content);
+        expect(JSON.stringify(payload)).not.toContain('林知夏');
+        expect(payload.fields).toHaveLength(modelCalls === 1 ? 2 : 1);
+        content = JSON.stringify({ mappings: payload.fields.map(f => ({ fieldId: f.fieldId, profilePath: f.label === '你的称呼' ? 'personal.fullName' : null })) });
+      }
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content } }] }) });
+    });
+    await panel.getByRole('button', { name: '智能识别', exact: true }).click();
+    await panel.locator('select[name=provider]').selectOption('custom');
+    await panel.locator('input[name=baseURL]').fill('http://127.0.0.1:5188/mock');
+    await panel.locator('input[name=model]').fill('mock-model');
+    await panel.locator('input[name=apiKey]').fill('fake-extension-key');
+    await panel.getByRole('button', { name: '测试 API Key' }).click();
+    await expect(panel.getByRole('status')).toContainText('连接测试成功');
+    expect(await worker.evaluate(async () => (await chrome.storage.local.get('modelConfig')).modelConfig)).toBeUndefined();
+    await panel.getByRole('button', { name: '保存模型设置' }).click();
+    await expect(panel.getByRole('status')).toContainText('模型设置已保存');
+    expect(await worker.evaluate(async () => (await chrome.storage.session.get('modelKey')).modelKey)).toBe('fake-extension-key');
+    expect(JSON.stringify(await worker.evaluate(() => chrome.storage.local.get(null)))).not.toContain('fake-extension-key');
+    await panel.getByRole('button', { name: '填写预览', exact: true }).click();
+    await form.bringToFront();
+    await panel.getByRole('button', { name: '重新识别', exact: true }).click();
+    const preferred = panel.locator('.preview-row').filter({ hasText: '你的称呼' });
+    await expect(preferred).toContainText('模型建议');
+    await expect(preferred.locator('input[type=checkbox]').first()).not.toBeChecked();
+    await expect(form.locator('input[name=preferredName]')).toHaveValue('');
+    await preferred.locator('input[type=checkbox]').first().check();
+    await panel.getByRole('button', { name: '确认填写', exact: true }).click();
+    await expect(form.locator('input[name=preferredName]')).toHaveValue('林知夏');
+    await expect(panel.getByRole('status')).toContainText('填写完成');
+    const memory = await worker.evaluate(async () => (await chrome.storage.local.get('recognitionMemory')).recognitionMemory);
+    expect(memory.entries).toHaveLength(1);
+    expect(JSON.stringify(memory)).not.toContain('林知夏');
     await panel.reload();
     await panel.getByRole('button', { name: '本地档案', exact: true }).click();
     await expect(panel.locator('input[name="personal:0:fullName"]')).toHaveValue('林知夏');
     await panel.getByRole('button', { name: '填写预览', exact: true }).click();
     await form.bringToFront();
     await panel.getByRole('button', { name: '识别表单', exact: true }).click();
+    await expect(preferred).toContainText('识别记忆');
+    expect(modelCalls).toBe(2);
     const other = await context.newPage();
     await other.goto('http://127.0.0.1:5188');
     await other.bringToFront();
     await panel.getByRole('button', { name: '确认填写', exact: true }).click();
     await expect(panel.getByRole('status')).toContainText('当前页面已切换');
     await expect(other.locator('#application-form input[name=applicantName]')).toHaveValue('');
+    // Permission denial is deterministic; the production automatic scan still
+    // uses the real permissions.contains API and never requests permission itself.
+    let deniedCalls = 0;
+    await context.route('https://api.deepseek.com/**', route => { deniedCalls++; return route.abort(); });
+    await panel.getByRole('button', { name: '智能识别', exact: true }).click();
+    await panel.locator('select[name=provider]').selectOption('deepseek');
+    await panel.evaluate(() => { chrome.permissions.request = async () => false; });
+    await panel.getByRole('button', { name: '测试 API Key' }).click();
+    await expect(panel.getByRole('status')).toContainText('未授权模型服务访问');
+    await panel.getByRole('button', { name: '保存模型设置' }).click();
+    await expect(panel.getByRole('status')).toContainText('设置已保存，但未授权');
+    await panel.getByRole('button', { name: '填写预览', exact: true }).click();
+    await other.bringToFront();
+    await panel.getByRole('button', { name: '重新识别', exact: true }).click();
+    await expect(panel.getByRole('status')).toContainText('未授权模型服务访问');
+    await expect(panel.getByRole('button', { name: '确认填写', exact: true })).toBeEnabled();
+    expect(deniedCalls).toBe(0);
+
   } finally {
     await context?.close();
     await rm(temp, { recursive: true, force: true });

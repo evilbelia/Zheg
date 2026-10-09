@@ -1,7 +1,9 @@
 import './style.css';
 import { emptyProfile, sampleProfile, validateProfile, SCHEMA, readValue, compatible } from './profile.js';
 import { matchFields, fillValue, sectionKind } from './matching.js';
-import { inferMappings, endpointURL, modelPayload } from './model.js';
+import { inferMappings, modelPayload, testConnection } from './model.js';
+import { normalizeConfig, validateConfig, configurationReady, permissionOrigin, DEEPSEEK_MODELS, DEEPSEEK_URL } from './model-config.js';
+import { emptyMemory, validateMemory, applyMemory, learnMappings } from './recognition-memory.js';
 import { getStored, setStored, isExtension, getSessionKey, setSessionKey } from './storage.js';
 import { scanPage, fillPage } from './adapter.js';
 import { demoForm } from './demo.js';
@@ -21,9 +23,10 @@ const icon = (name, size = 20) => {
 let profile;
 try { profile = validateProfile(await getStored('profile', isExtension ? emptyProfile() : sampleProfile())); }
 catch { profile = emptyProfile(); }
-let config = await getStored('modelConfig', { baseURL: '', model: '' });
+let config = normalizeConfig(await getStored('modelConfig', {}));
+let memory = validateMemory(await getStored('recognitionMemory', emptyMemory()));
 let apiKey = await getSessionKey();
-let rows = [], activeTab = 'preview', busy = false, scanned = false, pageTitle = '', lastScan = '';
+let rows = [], activeTab = 'preview', busy = false, scanned = false, pageTitle = '', lastScan = '', pageOrigin = '';
 
 document.body.classList.toggle('extension', isExtension);
 document.querySelector('#app').innerHTML = `${!isExtension ? `<header class="site-header"><a class="brand" href="/"><span class="brand-mark">桂</span><strong>折桂<span>ZHEG</span></strong></a><div class="header-links"><span class="version">MVP 0.1</span><span class="local-note">${icon('shield', 16)} 个人档案保存在本地</span></div></header>
@@ -35,7 +38,7 @@ document.querySelector('#app').innerHTML = `${!isExtension ? `<header class="sit
     <div id="panel-content"></div>
     <div id="fill-actions"></div>
     <div class="assistant-footer">${icon('shield', 14)} ${isExtension ? '确认后填写 · 最终提交由你完成' : '演示数据只保存在当前浏览器'}</div>
-  </aside>${!isExtension ? '</div><footer class="page-footer"><span>折桂 Zheg</span><span>让每一次秋招投递，都算数。</span><span>规则匹配 + 可选模型消歧</span></footer></main>' : '</main>'}`;
+  </aside>${!isExtension ? '</div><footer class="page-footer"><span>折桂 Zheg</span><span>让每一次秋招投递，都算数。</span><span>规则匹配 + 自动智能识别</span></footer></main>' : '</main>'}`;
 
 function notice(message, error = false) {
   const el = document.querySelector('#notice');
@@ -72,7 +75,6 @@ function renderPreview() {
     ${!scanned ? `<div class="empty-state"><div class="empty-illustration"><div class="paper"><span></span><span></span><span></span><span></span></div><div class="illustration-check">${icon('check', 22)}</div></div><h3>重复的信息，交给折桂</h3><p>从本地档案找到对应内容，<br>每一项都由你检查后再填入。</p><div class="steps"><span><b>1</b> 识别字段</span><i>—</i><span><b>2</b> 检查预览</span><i>—</i><span><b>3</b> 确认填写</span></div></div><div class="tip-card">${icon('file', 20)}<div><strong>${isExtension ? '先准备一份个人档案' : '一份演示档案已经准备好'}</strong><p>${isExtension ? '在“本地档案”中录入信息，或导入 JSON。' : '林知夏的两段教育经历和一段实习，可直接体验。'}</p><button class="text-button" data-go-profile>查看本地档案 ${icon('arrow', 14)}</button></div></div>` : `
     <div class="preview-stats"><div><strong>${rows.length}</strong><span>网页字段</span></div><div><strong class="green">${matched}</strong><span>已匹配</span></div><div><strong class="amber">${unresolved}</strong><span>待确认</span></div></div>
     <div class="preview-hint">检查档案来源和待填值。取消勾选可跳过；网页已有内容默认保留。</div>
-    ${unresolved ? `<button class="button model-button" id="infer" ${busy ? 'disabled' : ''}>${icon('spark', 16)} 用模型分析 ${unresolved} 个待确认字段</button>` : ''}
     <div class="preview-list">${groups.map(groupId => {
       const groupRows = rows.filter(r => r.groupId === groupId);
       const kind = sectionKind(groupRows[0].section);
@@ -116,28 +118,96 @@ function collectProfile() {
   }
   return draft;
 }
+function settingsConfig(form) {
+  const data = new FormData(form);
+  return validateConfig({ provider: data.get('provider'), baseURL: data.get('baseURL'), model: data.get('model'), autoInfer: data.has('autoInfer') });
+}
+function failureMessage(error) {
+  return error.name === 'TimeoutError' ? '模型请求超时，可继续手动选择档案字段。' : error.message || '操作失败，请重试。';
+}
 function renderSettings() {
-  document.querySelector('#panel-content').innerHTML = `<div class="panel-intro"><h3>让歧义字段更容易理解</h3><p>规则先匹配，模型只分析待确认字段。每次调用都由你主动触发。</p></div><div class="privacy-box">${icon('shield', 23)}<div><strong>发送结构，档案留在本地</strong><p>发送过滤后的标签、控件类型、选项和分组；不发送档案值、已有输入值、网页地址或 HTML。页面标签也可能包含个人信息，请在调用前检查下方内容。</p></div></div><form id="settings-form" class="settings-form"><label>服务地址<span>兼容 Chat Completions 接口的 API 根地址</span><input name="baseURL" type="url" placeholder="https://api.example.com/v1" value="${esc(config.baseURL)}" required></label><label>模型名称<input name="model" placeholder="服务商提供的模型名称" value="${esc(config.model)}" required></label><label>API Key<input name="apiKey" type="password" autocomplete="off" placeholder="可选，本地服务可留空" value="${esc(apiKey)}"></label><p class="small-note">密钥${isExtension ? '仅存于扩展会话存储，浏览器会话结束后需重新输入' : '仅保留在此页面内存，刷新后需重新输入'}。请求超时 20 秒，失败可继续手动选择。</p><button class="button primary" type="submit">保存模型设置</button></form><details class="payload-details"><summary>查看待发送的字段结构（${rows.filter(r => !r.path).length} 个字段）</summary><pre>${esc(JSON.stringify(modelPayload(rows.filter(r => !r.path)), null, 2))}</pre></details>`;
-  document.querySelector('#settings-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    const data = new FormData(event.target);
-    try {
-      endpointURL(data.get('baseURL'));
-      const next = { baseURL: data.get('baseURL').trim(), model: data.get('model').trim() };
-      if (!next.model) throw new Error('请输入模型名称。');
-      await setStored('modelConfig', next);
-      await setSessionKey(data.get('apiKey').trim());
-      config = next; apiKey = data.get('apiKey').trim();
-      notice('模型设置已保存。返回填写预览，主动点击模型分析即可。');
-    } catch (error) { notice(error.message, true); }
+  document.querySelector('#panel-content').innerHTML = `<div class="panel-intro"><h3>让歧义字段更容易理解</h3><p>点击识别后，先使用规则和本地识别记忆，再自动用模型分析待确认字段。填写前仍由你核对。</p></div>
+    <div class="privacy-box">${icon('shield', 23)}<div><strong>发送结构，档案留在本地</strong><p>自动分析会向所选服务商发送过滤后的标签、控件类型、选项和分组；不发送档案值、已有输入值、网页地址或 HTML。标签和选项仍可能包含个人信息，可关闭自动智能识别。</p></div></div>
+    <form id="settings-form" class="settings-form">
+    <label class="auto-toggle"><input name="autoInfer" type="checkbox" ${config.autoInfer ? 'checked' : ''}> 自动智能识别<span>开关立即保存；关闭后仅使用规则与识别记忆。</span></label>
+    <label>服务商<select name="provider"><option value="deepseek" ${config.provider === 'deepseek' ? 'selected' : ''}>DeepSeek</option><option value="custom" ${config.provider === 'custom' ? 'selected' : ''}>自定义兼容接口</option></select></label>
+    <label>服务地址<span>兼容 Chat Completions 接口的 API 根地址</span><input name="baseURL" type="url" value="${esc(config.baseURL)}" ${config.provider === 'deepseek' ? 'readonly' : ''} required></label>
+    <label id="model-choice">模型名称${config.provider === 'deepseek' ? `<select name="model">${DEEPSEEK_MODELS.map(model => `<option ${config.model === model ? 'selected' : ''}>${model}</option>`).join('')}</select>` : `<input name="model" value="${esc(config.model)}" placeholder="服务商提供的模型名称" maxlength="200" required>`}</label>
+    <label>API Key<input name="apiKey" type="password" autocomplete="off" placeholder="DeepSeek 必填，本地服务可留空" value="${esc(apiKey)}"></label>
+    <p class="small-note">密钥${isExtension ? '仅存于扩展会话存储，浏览器会话结束后需重新输入' : '仅保留在此页面内存，刷新后需重新输入'}。保存或测试时申请服务访问权限。请求超时 20 秒，失败可继续手动选择。</p>
+    <div class="settings-actions"><button class="button primary" type="submit">保存模型设置</button><button class="button secondary" id="test-key" type="button">测试 API Key</button></div>
+    <p class="small-note">测试使用当前输入的配置，不自动保存，不发送网页或档案信息，可能产生少量费用。</p></form>
+    <div class="memory-actions"><button class="button secondary" id="clear-memory">清空识别记忆</button><p class="small-note">确认填写成功后积累字段映射。记忆仅保存在本机，清空不影响个人档案。</p></div>
+    <details class="payload-details"><summary>查看待发送的字段结构（${rows.filter(r => !r.path).length} 个字段）</summary><pre>${esc(JSON.stringify(modelPayload(rows.filter(r => !r.path)), null, 2))}</pre></details>`;
+  const form = document.querySelector('#settings-form');
+  form.elements.provider.addEventListener('change', () => {
+    const deepseek = form.elements.provider.value === 'deepseek';
+    form.elements.baseURL.readOnly = deepseek;
+    form.elements.baseURL.value = deepseek ? DEEPSEEK_URL : (config.provider === 'custom' ? config.baseURL : '');
+    document.querySelector('#model-choice').innerHTML = `模型名称${deepseek ? `<select name="model">${DEEPSEEK_MODELS.map(model => `<option>${model}</option>`).join('')}</select>` : `<input name="model" placeholder="服务商提供的模型名称" maxlength="200" value="${esc(config.provider === 'custom' ? config.model : '')}" required>`}`;
   });
+  form.elements.autoInfer.addEventListener('change', async event => {
+    const el = event.target, next = { ...config, autoInfer: el.checked };
+    busy = true; el.disabled = true;
+    try { await setStored('modelConfig', next); config = next; notice(config.autoInfer ? '自动智能识别已开启，下次识别时生效。' : '自动智能识别已关闭，仍可使用规则和识别记忆。'); }
+    catch { el.checked = config.autoInfer; notice('开关保存失败，请重试。', true); }
+    finally { busy = false; el.disabled = false; }
+  });
+  const run = async (event, testing) => {
+    event.preventDefault();
+    if (busy) return;
+    let next, key, permission;
+    try {
+      next = settingsConfig(form); key = form.elements.apiKey.value.trim();
+      if (!configurationReady(next, key)) throw new Error('请先输入 DeepSeek API Key。');
+      // Request from this user gesture, before storage/network awaits. Automatic scans only check permission.
+      permission = isExtension ? chrome.permissions.request({ origins: [permissionOrigin(next)] }) : Promise.resolve(true);
+    } catch (error) { notice(failureMessage(error), true); return; }
+    busy = true;
+    const controls = [...form.querySelectorAll('input,select,button')];
+    controls.forEach(el => { el.disabled = true; });
+    notice(testing ? '正在测试连接…' : '正在保存设置…');
+    try {
+      const allowed = await permission;
+      if (testing) {
+        if (!allowed) throw new Error('未授权模型服务访问，无法测试连接。');
+        notice(await testConnection(next, key));
+      } else {
+        await setSessionKey(key);
+        await setStored('modelConfig', next);
+        config = next; apiKey = key;
+        notice(allowed ? '模型设置已保存。下次识别表单时将按开关设置自动分析。' : '设置已保存，但未授权模型服务访问；识别时仅使用本地匹配。可重新保存设置以授权。', !allowed);
+      }
+    } catch (error) { notice(failureMessage(error), true); }
+    finally { busy = false; controls.forEach(el => { el.disabled = false; }); }
+  };
+  form.addEventListener('submit', event => run(event, false));
+  document.querySelector('#test-key').addEventListener('click', event => run(event, true));
+}
+async function automaticallyInfer() {
+  const unresolved = rows.filter(row => !row.path);
+  if (!config.autoInfer || !unresolved.length) return;
+  if (!configurationReady(config, apiKey)) {
+    notice('本地匹配完成。请在智能识别中配置 API Key，或关闭自动智能识别；当前可继续手动选择。'); return;
+  }
+  try {
+    if (isExtension && !await chrome.permissions.contains({ origins: [permissionOrigin(config)] })) {
+      throw new Error('未授权模型服务访问，请在智能识别中保存设置以授权；可继续手动选择。');
+    }
+    notice('正在自动分析待确认字段…');
+    const mappings = await inferMappings(unresolved, config, apiKey);
+    for (const mapping of mappings) {
+      const row = rows.find(r => r.id === mapping.fieldId);
+      if (mapping.profilePath) { row.path = mapping.profilePath; row.source = '模型建议'; row.selected = false; }
+    }
+    notice('智能识别完成。模型建议默认未勾选，请核对后选择填写；仍未匹配的字段可手动选择。');
+  } catch (error) { notice(`${failureMessage(error)} 本地匹配已保留，可继续手动选择。`, true); }
 }
 
 document.querySelector('#app').addEventListener('click', async event => {
   const button = event.target.closest('button');
-  if (!button || button.disabled) return;
+  if (!button || button.disabled || busy) return;
   if (button.dataset.tab || button.hasAttribute('data-go-profile')) {
-    if (busy) return;
     activeTab = button.dataset.tab || 'profile'; notice(''); render(); return;
   }
   if (button.dataset.add) {
@@ -153,25 +223,24 @@ document.querySelector('#app').addEventListener('click', async event => {
     link.href = url; link.download = 'zheg-profile.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); return;
   }
   if (button.id === 'reset-demo') { rows = []; scanned = false; lastScan = ''; if (activeTab === 'preview') renderPreview(); notice('演示表单已重置，可以重新识别。'); return; }
-  if (button.id === 'infer') {
-    if (!config.baseURL || !config.model) { activeTab = 'settings'; render(); notice('请先配置模型服务，并检查待发送的字段结构。'); return; }
-    if (isExtension) {
-      try {
-        const url = new URL(config.baseURL), origin = `${url.protocol}//${url.hostname}/*`;
-        const allowed = await chrome.permissions.request({ origins: [origin] });
-        if (!allowed) return notice('未授权模型服务访问，可继续手动选择档案字段。', true);
-      } catch { return notice('无法获取模型服务访问权限，可继续手动选择档案字段。', true); }
-    }
+  if (button.id === 'clear-memory') {
+    busy = true;
+    try { await setStored('recognitionMemory', emptyMemory()); memory = emptyMemory(); notice('识别记忆已清空，下次识别时生效。'); }
+    catch { notice('识别记忆清空失败，请重试。', true); }
+    finally { busy = false; }
+    return;
   }
-  if (!['scan', 'fill', 'infer'].includes(button.id) || busy) return;
+  if (!['scan', 'fill'].includes(button.id)) return;
   const action = button.id;
   busy = true; notice(''); renderPreview();
   try {
     if (action === 'scan') {
       const result = await scanPage();
-      rows = matchFields(result.fields, profile); scanned = true; pageTitle = result.title;
+      pageOrigin = result.origin;
+      rows = applyMemory(matchFields(result.fields, profile), memory, pageOrigin); scanned = true; pageTitle = result.title;
       lastScan = result.unsupported ? `另有 ${result.unsupported} 个控件暂不支持` : '最终提交由你完成';
-      if (result.truncated) notice('页面字段较多，首版仅识别前 200 个可用字段。');
+      await automaticallyInfer();
+      if (result.truncated) notice(`${document.querySelector('#notice').textContent} 页面字段较多，仅识别前 200 个可用字段。`);
     } else if (action === 'fill') {
       const items = [];
       for (const row of rows.filter(r => r.selected)) {
@@ -187,20 +256,16 @@ document.querySelector('#app').addEventListener('click', async event => {
         if (result.status === 'success') { row.hasValue = true; row.override = false; }
       }
       const count = type => rows.filter(r => r.selected && r.result === type).length;
-      notice(`填写完成：成功 ${count('success')} 项，保留已有内容 ${count('skipped')} 项，需手动处理 ${count('failed')} 项。`);
-    } else {
-      const unresolved = rows.filter(r => !r.path);
-      const mappings = await inferMappings(unresolved, config, apiKey);
-      for (const mapping of mappings) {
-        const row = rows.find(r => r.id === mapping.fieldId);
-        if (mapping.profilePath) { row.path = mapping.profilePath; row.source = '模型建议'; row.selected = false; }
-      }
-      notice('模型分析完成。模型建议默认未勾选，请检查来源和待填值后选择填写。');
+      const summary = `填写完成：成功 ${count('success')} 项，保留已有内容 ${count('skipped')} 项，需手动处理 ${count('failed')} 项。`;
+      const next = learnMappings(memory, rows, pageOrigin);
+      try { await setStored('recognitionMemory', next); memory = next; notice(summary); }
+      catch { notice(`${summary} 识别记忆保存失败，本次填写结果不受影响。`, true); }
     }
   } catch (error) { notice(error.name === 'TimeoutError' ? '模型请求超时，可继续手动选择档案字段。' : error.message || '操作失败，请重试。', true); }
   finally { busy = false; renderPreview(); }
 });
 document.querySelector('#app').addEventListener('change', event => {
+  if (busy) return;
   const el = event.target;
   if (el.dataset.group) {
     const kind = sectionKind(rows.find(r => r.groupId === el.dataset.group).section);
