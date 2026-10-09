@@ -1,4 +1,4 @@
-import { SCHEMA, compatible, readValue } from './profile.js';
+import { profileSchema, profileSections, compatibleDefinition, readValue } from './profile.js';
 
 export const normalize = value => String(value ?? '').toLowerCase().replace(/[\s*＊：:()（）_\-]/g, '');
 export function sectionKind(section) {
@@ -8,18 +8,22 @@ export function sectionKind(section) {
   return null;
 }
 
+export function groupForSection(section, profile) {
+  return profileSections(profile).find(s => normalize(s.title) === normalize(section))?.id ?? sectionKind(section);
+}
 export function matchFields(fields, profile) {
-  const counts = { education: new Map(), internships: new Map() };
+  const counts = Object.fromEntries(profileSections(profile).filter(s => s.id !== 'personal').map(s => [s.id, new Map()]));
+  const schema = profileSchema(profile);
   return fields.map(field => {
-    const kind = sectionKind(field.section);
+    const kind = groupForSection(field.section, profile);
     let index = 0;
     if (counts[kind]) {
       const group = field.groupId;
       if (!counts[kind].has(group)) counts[kind].set(group, counts[kind].size);
       index = counts[kind].get(group);
     }
-    const candidates = SCHEMA.filter(item => compatible(field, item.path) && item.aliases.some(a => normalize(a) === normalize(field.label)));
-    const scoped = candidates.filter(item => !kind || item.path.startsWith(kind) || item.path.startsWith('personal.'));
+    const candidates = schema.filter(item => compatibleDefinition(field, item) && item.aliases.some(a => normalize(a) === normalize(field.label)));
+    const scoped = candidates.filter(item => !kind || item.sectionId === kind || item.sectionId === 'personal');
     const path = scoped.length === 1 ? scoped[0].path : '';
     const value = readValue(profile, path, index);
     return { ...field, path, index, source: path ? '规则匹配' : '需要确认', selected: Boolean(path && value), status: '', override: false };

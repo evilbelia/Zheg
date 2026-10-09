@@ -1,5 +1,15 @@
 import { test, expect } from '@playwright/test';
 
+const runtimeErrors = new WeakMap();
+test.beforeEach(async ({ page }) => {
+  const errors = [];
+  runtimeErrors.set(page, errors);
+  page.on('pageerror', error => errors.push(error.message));
+});
+test.afterEach(async ({ page }) => {
+  expect(runtimeErrors.get(page), '界面操作不能产生未处理的运行时错误').toEqual([]);
+});
+
 test('完整演示：识别不填、上下文映射、多段经历、手动映射与跳过', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '重复的信息，交给折桂' })).toBeVisible();
@@ -41,20 +51,18 @@ test('已有值保护与显式覆盖；切换教育记录', async ({ page }) => 
   await expect(page.locator('#application-form input[name=applicantName]')).toHaveValue('林知夏');
 });
 
-test('档案保存刷新恢复、非法导入不覆盖；导出 JSON', async ({ page }) => {
+test('档案保存刷新恢复；旧导入导出和演示载入入口移除', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await expect(page.locator('#profile-text')).toBeVisible();
+  await expect(page.getByRole('button', { name: '载入个人信息', exact: true })).toBeVisible();
+  for (const name of ['导出 JSON', '导入 JSON', '载入虚构演示档案']) await expect(page.getByText(name, { exact: true })).toHaveCount(0);
   await page.locator('input[name="personal:0:fullName"]').fill('测试用户');
   await page.getByRole('button', { name: '保存档案', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('档案已保存在本机');
   await page.reload();
   await page.getByRole('button', { name: '本地档案', exact: true }).click();
   await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('测试用户');
-  await page.locator('#import-profile').setInputFiles({ name: 'broken.json', mimeType: 'application/json', buffer: Buffer.from('{bad') });
-  await expect(page.getByRole('status')).toContainText('导入失败');
-  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('测试用户');
-  const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: '导出 JSON' }).click();
-  expect((await download).suggestedFilename()).toBe('zheg-profile.json');
 });
 
 async function configureCustom(page, { auto = true, key = 'test-secret' } = {}) {
@@ -201,4 +209,163 @@ test('窄屏无水平溢出，页面不执行脚本标签', async ({ page }) => 
   await page.getByRole('button', { name: '识别表单', exact: true }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await expect(page.locator('.preview-list img')).toHaveCount(0);
+});
+
+test('REQ-20261009-03 文本载入归类、草稿不自动保存、重复去重与失败保护', async ({ page }) => {
+  await page.goto('/');
+  await configureCustom(page, { auto: false });
+  const text = '姓名：另一姓名\n实习：示例科技有限公司，是否有实习证明：是\n家庭：父亲，教师';
+  let calls = 0;
+  await page.route('https://model.example/v1/chat/completions', async route => {
+    calls++;
+    const body = route.request().postDataJSON(), payload = JSON.parse(body.messages[1].content);
+    expect(payload.text).toBe(text);
+    expect(JSON.stringify(payload.outline)).not.toContain('林知夏');
+    expect(JSON.stringify(payload.outline)).not.toContain('浙江大学');
+    expect(Object.keys(payload).sort()).toEqual(['outline', 'text']);
+    await route.fulfill({ contentType: 'application/json', body: completion(JSON.stringify({ sections: [
+      { title: '基本信息', records: [{ fields: [{ label: '姓名', value: '另一姓名', type: 'text' }, { label: '英语等级', value: '六级', type: 'text' }] }] },
+      { title: '实习经历', records: [{ fields: [{ label: '公司', value: '示例科技有限公司', type: 'text' }, { label: '是否有实习证明', value: '是', type: 'text' }] }] },
+      { title: '家庭信息', records: [{ fields: [{ label: '成员关系', value: '父亲', type: 'text' }, { label: '职业', value: '教师', type: 'text' }] }] },
+    ] })) });
+  });
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await expect(page.getByText(/点击载入会将上方原文/)).toBeVisible();
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('请先粘贴');
+  expect(calls).toBe(0);
+  await page.locator('#profile-text').fill(text);
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('个人信息已载入编辑区');
+  await expect(page.getByRole('status')).toContainText('保留原值或删除状态 1 项');
+  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('林知夏');
+  await expect(page.getByRole('textbox', { name: '是否有实习证明内容', exact: true })).toHaveValue('是');
+  await expect(page.getByRole('textbox', { name: '成员关系内容', exact: true })).toHaveValue('父亲');
+  expect(await page.evaluate(() => localStorage.getItem('zheg:profile'))).toBeNull();
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('新增或补充 0 项');
+  expect(await page.locator('[data-profile-section=internships] .profile-record').count()).toBe(1);
+  expect(await page.locator('[data-profile-section]').filter({ has: page.getByRole('heading', { name: '家庭信息', exact: true }) }).locator('.profile-record').count()).toBe(1);
+  await page.getByRole('button', { name: '保存档案', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('档案已保存在本机');
+  const before = await page.evaluate(() => localStorage.getItem('zheg:profile'));
+  expect(before).not.toContain(text);
+  await page.locator('input[name="personal:0:fullName"]').fill('未保存姓名');
+  await page.route('https://model.example/**', route => route.fulfill({ contentType: 'application/json', body: completion('{bad') }));
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('原编辑内容和已保存档案未改变');
+  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('未保存姓名');
+  expect(await page.evaluate(() => localStorage.getItem('zheg:profile'))).toBe(before);
+  await page.route('https://model.example/**', route => route.fulfill({ status: 401, body: 'do not expose test-secret' }));
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('HTTP 401');
+  await expect(page.getByRole('status')).not.toContainText('test-secret');
+  await page.reload();
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await expect(page.locator('#profile-text')).toHaveValue('');
+  await expect(page.getByRole('textbox', { name: '成员关系内容', exact: true })).toHaveValue('父亲');
+});
+
+async function addInformation(record, label, value) {
+  await record.locator('.information-adder summary').click();
+  await record.locator('[data-new-label]').fill(label);
+  await record.locator('[data-new-value]').fill(value);
+  await record.getByRole('button', { name: '添加信息', exact: true }).click();
+}
+
+test('REQ-20261009-03 子信息与家庭板块增删、动态规则 / 模型 / 记忆完整填写', async ({ page }) => {
+  await page.goto('/');
+  await configureCustom(page);
+  let calls = 0, storedPath;
+  await page.route('https://model.example/v1/chat/completions', async route => {
+    calls++;
+    const payload = JSON.parse(route.request().postDataJSON().messages[1].content);
+    expect(JSON.stringify(payload)).not.toContain('林知夏');
+    const schema = payload.profileSchema.find(s => s.description === '实习经历 · 是否有实习证明');
+    if (schema) storedPath = schema.path;
+    const mappings = payload.fields.map(f => ({ fieldId: f.fieldId, profilePath: f.label === '能否提供实习证明' && schema ? schema.path : null }));
+    if (calls === 2) expect(payload.fields.some(f => f.label === '能否提供实习证明')).toBe(false);
+    await route.fulfill({ contentType: 'application/json', body: completion(JSON.stringify({ mappings })) });
+  });
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  const internship = page.locator('[data-profile-section=internships] .profile-record').first();
+  await addInformation(internship, '是否有实习证明', '是');
+  await expect(page.getByRole('textbox', { name: '是否有实习证明内容', exact: true })).toHaveValue('是');
+  await page.getByRole('button', { name: '删除现居城市', exact: true }).click();
+  await expect(page.locator('input[name="personal:0:city"]')).toHaveCount(0);
+  await page.locator('#new-section-title').fill('家庭信息');
+  await page.getByRole('button', { name: '＋ 新增板块', exact: true }).click();
+  const family = page.locator('[data-profile-section]').filter({ has: page.getByRole('heading', { name: '家庭信息', exact: true }) });
+  await addInformation(family.locator('.profile-record').first(), '成员关系', '父亲');
+  await page.getByRole('button', { name: '添加家庭信息记录', exact: true }).click();
+  await addInformation(family.locator('.profile-record').nth(1), '成员关系', '母亲');
+  await page.getByRole('button', { name: '智能识别', exact: true }).click();
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '成员关系内容', exact: true }).nth(1)).toHaveValue('母亲');
+  await page.getByRole('button', { name: '保存档案', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('档案已保存在本机');
+  await page.locator('#application-form').evaluate(form => {
+    form.querySelector('[data-zheg-section=实习经历] .form-grid').insertAdjacentHTML('beforeend', '<label>能否提供实习证明<input name="proof" type="text"></label>');
+    form.insertAdjacentHTML('beforeend', '<section data-zheg-section="家庭信息"><label>成员关系<input name="family1"></label></section><section data-zheg-section="家庭信息"><label>成员关系<input name="family2"></label></section>');
+  });
+  await page.getByRole('button', { name: '填写预览', exact: true }).click();
+  await page.getByRole('button', { name: '识别表单', exact: true }).click();
+  const proof = page.locator('.preview-row').filter({ has: page.getByRole('checkbox', { name: '填写 能否提供实习证明', exact: true }) });
+  await expect(proof).toContainText('模型建议');
+  await proof.locator('input[type=checkbox]').check();
+  await expect(page.getByRole('combobox', { name: '家庭信息对应记录' }).nth(1)).toHaveValue('1');
+  await page.getByRole('button', { name: '确认填写', exact: true }).click();
+  await expect(page.locator('input[name=proof]')).toHaveValue('是');
+  await expect(page.locator('input[name=family1]')).toHaveValue('父亲');
+  await expect(page.locator('input[name=family2]')).toHaveValue('母亲');
+  await expect(page.locator('input[name=city]')).toHaveValue('');
+  await page.getByRole('button', { name: '重新识别', exact: true }).click();
+  await expect(proof).toContainText('识别记忆');
+  expect(calls).toBe(2);
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await page.getByRole('button', { name: '删除是否有实习证明', exact: true }).click();
+  await page.getByRole('button', { name: '删除家庭信息第 2 段', exact: true }).click();
+  await page.getByRole('button', { name: '保存档案', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('档案已保存在本机');
+  const memory = await page.evaluate(() => JSON.parse(localStorage.getItem('zheg:recognitionMemory')));
+  expect(memory.entries.some(entry => entry.path === storedPath)).toBe(false);
+  await page.getByRole('button', { name: '填写预览', exact: true }).click();
+  await page.getByRole('button', { name: '识别表单', exact: true }).click();
+  await expect(proof).toContainText('需要确认');
+  await expect(proof.locator(`option[value="${storedPath}::0"]`)).toHaveCount(0);
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await page.getByRole('button', { name: '删除家庭信息板块', exact: true }).click();
+  await expect(family).toHaveCount(0);
+  await page.setViewportSize({ width: 375, height: 812 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('REQ-20261009-03 旧档案迁移备份、拒绝重复/空标题、删除后刷新不恢复', async ({ page }) => {
+  const legacy = { schemaVersion: 1, personal: { fullName: '旧用户', city: '旧城市' }, education: [], internships: [{ company: '旧公司' }] };
+  await page.addInitScript(value => {
+    if (!localStorage.getItem('zheg:profile')) localStorage.setItem('zheg:profile', JSON.stringify(value));
+  }, legacy);
+  await page.goto('/');
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('旧用户');
+  expect((await page.evaluate(() => JSON.parse(localStorage.getItem('zheg:profile')))).schemaVersion).toBe(1);
+  await page.getByRole('button', { name: '＋ 新增板块', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('非空');
+  await page.locator('#new-section-title').fill('实习经历');
+  await page.getByRole('button', { name: '＋ 新增板块', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('不能重复');
+  const record = page.locator('[data-profile-section=internships] .profile-record').first();
+  await addInformation(record, '公司', '重复公司');
+  await expect(page.getByRole('status')).toContainText('不能重复');
+  await page.getByRole('button', { name: '删除现居城市', exact: true }).click();
+  await page.getByRole('button', { name: '保存档案', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('档案已保存在本机');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('zheg:profileV1Backup')))).toEqual(legacy);
+  await page.reload();
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await expect(page.locator('input[name="personal:0:city"]')).toHaveCount(0);
+  await page.getByRole('button', { name: '保存档案', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('档案已保存在本机');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('zheg:profileV1Backup')))).toEqual(legacy);
+  expect((await page.evaluate(() => JSON.parse(localStorage.getItem('zheg:profile')))).schemaVersion).toBe(2);
 });

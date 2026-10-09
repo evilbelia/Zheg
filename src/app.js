@@ -1,12 +1,13 @@
 import './style.css';
-import { emptyProfile, sampleProfile, validateProfile, SCHEMA, readValue, compatible } from './profile.js';
-import { matchFields, fillValue, sectionKind } from './matching.js';
+import { emptyProfile, sampleProfile, validateProfile, profileSchema, profileSections, profileSection, fieldsForRecord, readValue, compatibleDefinition, addProfileField, removeProfileField, addProfileSection, removeProfileSection, addProfileRecord, removeProfileRecord } from './profile.js';
+import { matchFields, fillValue, groupForSection } from './matching.js';
 import { inferMappings, modelPayload, testConnection } from './model.js';
 import { normalizeConfig, validateConfig, configurationReady, permissionOrigin, DEEPSEEK_MODELS, DEEPSEEK_URL } from './model-config.js';
 import { emptyMemory, validateMemory, applyMemory, learnMappings } from './recognition-memory.js';
 import { getStored, setStored, isExtension, getSessionKey, setSessionKey } from './storage.js';
 import { scanPage, fillPage } from './adapter.js';
 import { demoForm } from './demo.js';
+import { extractProfile, mergeExtraction } from './profile-extraction.js';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const icon = (name, size = 20) => {
@@ -21,10 +22,12 @@ const icon = (name, size = 20) => {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.file}</svg>`;
 };
 let profile;
-try { profile = validateProfile(await getStored('profile', isExtension ? emptyProfile() : sampleProfile())); }
+const storedProfile = await getStored('profile', isExtension ? emptyProfile() : sampleProfile());
+try { profile = validateProfile(storedProfile); }
 catch { profile = emptyProfile(); }
 let config = normalizeConfig(await getStored('modelConfig', {}));
-let memory = validateMemory(await getStored('recognitionMemory', emptyMemory()));
+let memory = validateMemory(await getStored('recognitionMemory', emptyMemory()), profile);
+let profileDraft = structuredClone(profile), profileText = '';
 let apiKey = await getSessionKey();
 let rows = [], activeTab = 'preview', busy = false, scanned = false, pageTitle = '', lastScan = '', pageOrigin = '';
 
@@ -50,19 +53,19 @@ function render() {
   document.querySelector('#fill-actions').replaceChildren();
   document.querySelectorAll('[data-tab]').forEach(el => { el.classList.toggle('active', el.dataset.tab === activeTab); el.setAttribute('aria-current', el.dataset.tab === activeTab ? 'page' : 'false'); });
   if (activeTab === 'preview') renderPreview();
-  else if (activeTab === 'profile') renderProfile(profile);
+  else if (activeTab === 'profile') renderProfile();
   else renderSettings();
 }
 function sourceOptions(row) {
   let html = '<option value="">请选择档案字段</option>';
-  for (const schema of SCHEMA) {
-    if (!compatible(row, schema.path)) continue;
-    const group = schema.path.split('[')[0];
-    const records = schema.path.includes('[]') ? profile[group] : [null];
-    records.forEach((record, index) => {
-      const label = schema.path.includes('[]') ? `${schema.label.replace(' · ', ` ${index + 1} · `)}${record.school || record.company ? `（${record.school || record.company}）` : ''}` : schema.label;
+  for (const schema of profileSchema(profile)) {
+    if (!compatibleDefinition(row, schema)) continue;
+    const section = profileSection(profile, schema.sectionId);
+    for (const index of schema.indices ?? []) {
+      const record = section.records[index];
+      const label = section.id === 'personal' ? schema.label : `${schema.label.replace(' · ', ` ${index + 1} · `)}${record.school || record.company ? `（${record.school || record.company}）` : ''}`;
       html += `<option value="${esc(schema.path)}::${index}" ${row.path === schema.path && row.index === index ? 'selected' : ''}>${esc(label)}</option>`;
-    });
+    }
   }
   return html;
 }
@@ -72,13 +75,13 @@ function renderPreview() {
   const selected = rows.filter(r => r.selected).length;
   const groups = [...new Set(rows.map(r => r.groupId))];
   document.querySelector('#panel-content').innerHTML = `<div class="scan-toolbar"><div><strong>${scanned ? '当前页面' : '开始一次轻松的填写'}</strong><p>${esc(scanned ? pageTitle : '先识别表单，再检查待填内容')}</p></div><button class="button primary" id="scan" ${busy ? 'disabled' : ''}>${icon('scan', 17)} ${busy ? '处理中…' : scanned ? '重新识别' : '识别表单'}</button></div>
-    ${!scanned ? `<div class="empty-state"><div class="empty-illustration"><div class="paper"><span></span><span></span><span></span><span></span></div><div class="illustration-check">${icon('check', 22)}</div></div><h3>重复的信息，交给折桂</h3><p>从本地档案找到对应内容，<br>每一项都由你检查后再填入。</p><div class="steps"><span><b>1</b> 识别字段</span><i>—</i><span><b>2</b> 检查预览</span><i>—</i><span><b>3</b> 确认填写</span></div></div><div class="tip-card">${icon('file', 20)}<div><strong>${isExtension ? '先准备一份个人档案' : '一份演示档案已经准备好'}</strong><p>${isExtension ? '在“本地档案”中录入信息，或导入 JSON。' : '林知夏的两段教育经历和一段实习，可直接体验。'}</p><button class="text-button" data-go-profile>查看本地档案 ${icon('arrow', 14)}</button></div></div>` : `
+    ${!scanned ? `<div class="empty-state"><div class="empty-illustration"><div class="paper"><span></span><span></span><span></span><span></span></div><div class="illustration-check">${icon('check', 22)}</div></div><h3>重复的信息，交给折桂</h3><p>从本地档案找到对应内容，<br>每一项都由你检查后再填入。</p><div class="steps"><span><b>1</b> 识别字段</span><i>—</i><span><b>2</b> 检查预览</span><i>—</i><span><b>3</b> 确认填写</span></div></div><div class="tip-card">${icon('file', 20)}<div><strong>${isExtension ? '先准备一份个人档案' : '一份演示档案已经准备好'}</strong><p>${isExtension ? '在“本地档案”中录入信息，或粘贴文本让模型整理。' : '林知夏的两段教育经历和一段实习，可直接体验。'}</p><button class="text-button" data-go-profile>查看本地档案 ${icon('arrow', 14)}</button></div></div>` : `
     <div class="preview-stats"><div><strong>${rows.length}</strong><span>网页字段</span></div><div><strong class="green">${matched}</strong><span>已匹配</span></div><div><strong class="amber">${unresolved}</strong><span>待确认</span></div></div>
     <div class="preview-hint">检查档案来源和待填值。取消勾选可跳过；网页已有内容默认保留。</div>
     <div class="preview-list">${groups.map(groupId => {
       const groupRows = rows.filter(r => r.groupId === groupId);
-      const kind = sectionKind(groupRows[0].section);
-      const records = ['education', 'internships'].includes(kind) ? profile[kind] : null;
+      const kind = groupForSection(groupRows[0].section, profile);
+      const records = kind && kind !== 'personal' ? profileSection(profile, kind)?.records : null;
       return `<section class="preview-group"><div class="group-heading"><h3>${esc(groupRows[0].section)}</h3>${records?.length ? `<select class="record-picker" ${busy ? 'disabled' : ''} data-group="${groupId}" aria-label="${esc(groupRows[0].section)}对应记录">${records.map((r, i) => `<option value="${i}" ${groupRows[0].index === i ? 'selected' : ''}>${i + 1} · ${esc(r.school || r.company || '未命名记录')}</option>`).join('')}</select>` : ''}</div>${groupRows.map(row => {
         const value = readValue(profile, row.path, row.index);
         const conversion = fillValue(row, value);
@@ -89,34 +92,72 @@ function renderPreview() {
   const bar = document.querySelector('#panel-content .fill-bar');
   document.querySelector('#fill-actions').replaceChildren(...(bar ? [bar] : []));
 }
-function renderProfile(draft) {
-  const labels = { personal: '基本信息', education: '教育经历', internships: '实习经历' };
-  document.querySelector('#panel-content').innerHTML = `<div class="panel-intro"><h3>一份档案，多次使用</h3><p>档案仅存于本机浏览器。填写前请检查信息。</p></div><form id="profile-form">
-    ${Object.keys(labels).map(group => `<section class="profile-section"><div class="group-heading"><h3>${labels[group]}</h3>${group !== 'personal' ? `<button type="button" class="text-button" data-add="${group}">＋ 添加经历</button>` : ''}</div>${(group === 'personal' ? [draft.personal] : draft[group]).map((record, index) => `<div class="profile-record">${group !== 'personal' ? `<div class="record-title"><span>第 ${index + 1} 段</span><button type="button" class="text-button danger" data-remove="${group}:${index}">删除</button></div>` : ''}<div class="profile-fields">${SCHEMA.filter(s => s.path.startsWith(group)).map(s => { const key = s.path.split('.').at(-1); return `<label>${esc(s.label.split(' · ').at(-1))}${key === 'description' ? `<textarea name="${group}:${index}:${key}" rows="3">${esc(record[key])}</textarea>` : `<input name="${group}:${index}:${key}" type="${s.type === 'date' ? 'month' : s.type === 'email' ? 'email' : 'text'}" value="${esc(record[key])}" maxlength="5000">`}</label>`; }).join('')}</div></div>`).join('') || '<p class="muted">还没有经历，点击右上角添加。</p>'}</section>`).join('')}
-    <div class="profile-actions"><button class="button primary" type="submit">保存档案</button><span class="muted">保存后请重新识别表单</span></div></form><div class="import-actions"><button class="button secondary" id="export-profile">导出 JSON</button><label class="button secondary file-button">导入 JSON<input type="file" id="import-profile" accept="application/json,.json"></label><button class="text-button" id="sample-profile">载入虚构演示档案</button></div><p class="small-note">导入及载入演示档案会替换当前编辑内容，点击“保存档案”后生效。导出的文件含个人信息，请自行保管。</p>`;
+function renderProfile(draft = profileDraft) {
+  profileDraft = draft;
+  document.querySelector('#panel-content').innerHTML = `<div class="panel-intro"><h3>一份档案，多次使用</h3><p>添加或删除信息后，请检查并保存。档案保存在本机浏览器。</p></div>
+    <section class="text-profile-loader"><label for="profile-text">粘贴个人信息</label><textarea id="profile-text" rows="6" maxlength="20000" placeholder="粘贴简历、经历描述、表格或列表文本，模型会自动整理到各板块。">${esc(profileText)}</textarea>
+    <p class="small-note">点击载入会将上方原文及当前板块 / 小标题发送给已配置的模型服务商，不发送现有档案值。最多 20000 字；结果先进入编辑区，不覆盖已保存档案，请核对后保存。</p>
+    <button class="button primary" type="button" id="load-profile">${icon('spark', 16)} 载入个人信息</button></section>
+    <form id="profile-form">${profileSections(draft).map(section => `<section class="profile-section" data-profile-section="${section.id}"><div class="group-heading"><h3>${esc(section.title)}</h3><div class="section-buttons">${section.id !== 'personal' ? `<button type="button" class="text-button" data-add-record="${section.id}" aria-label="添加${esc(section.title)}记录">＋ 添加记录</button>` : ''}${section.custom ? `<button type="button" class="text-button danger" data-remove-section="${section.id}" aria-label="删除${esc(section.title)}板块">删除板块</button>` : ''}</div></div>
+      ${section.records.map((record, index) => `<div class="profile-record" data-record="${section.id}:${index}">${section.id !== 'personal' ? `<div class="record-title"><span>第 ${index + 1} 段</span><button type="button" class="text-button danger" data-remove-record="${section.id}:${index}" aria-label="删除${esc(section.title)}第 ${index + 1} 段">删除记录</button></div>` : ''}
+      <div class="profile-fields">${fieldsForRecord(draft, section.id, index).map(field => `<div class="profile-field ${field.id === 'description' ? 'wide' : ''}" data-profile-field="${field.id}">
+      <button type="button" class="delete-field" data-delete-field="${section.id}:${index}:${field.id}" aria-label="删除${esc(field.label)}" title="删除小标题及内容">×</button>
+      ${field.builtin ? `<label>${esc(field.label)}${field.id === 'description' ? `<textarea data-profile-input="base" data-group="${section.id}" data-index="${index}" data-field="${field.id}" name="${section.id}:${index}:${field.id}" rows="3" maxlength="5000">${esc(field.value)}</textarea>` : `<input data-profile-input="base" data-group="${section.id}" data-index="${index}" data-field="${field.id}" name="${section.id}:${index}:${field.id}" type="${field.type === 'date' ? 'month' : field.type === 'email' ? 'email' : 'text'}" value="${esc(field.value)}" maxlength="5000">`}</label>` : `<label>小标题<input data-profile-input="label" data-group="${section.id}" data-index="${index}" data-field="${field.id}" value="${esc(field.label)}" aria-label="${esc(field.label)}小标题" maxlength="80" required></label><label>内容<textarea data-profile-input="value" data-group="${section.id}" data-index="${index}" data-field="${field.id}" aria-label="${esc(field.label)}内容" rows="2" maxlength="5000">${esc(field.value)}</textarea></label>`}
+      </div>`).join('') || '<p class="muted">还没有信息，可在下方添加。</p>'}</div>
+      <details class="information-adder"><summary>＋ 添加信息</summary><div class="new-field-form"><label>小标题<input data-new-label placeholder="例如：是否有实习证明" maxlength="80"></label><label>内容<textarea data-new-value placeholder="例如：是" rows="2" maxlength="5000"></textarea></label><button type="button" class="button secondary" data-add-field="${section.id}:${index}">添加信息</button></div></details>
+      </div>`).join('') || '<p class="muted">还没有记录，点击右上角添加。</p>'}</section>`).join('')}
+    <div class="new-section-form"><label for="new-section-title">新板块名称</label><input id="new-section-title" placeholder="例如：家庭信息" maxlength="80"><button class="button secondary" type="button" id="add-section">＋ 新增板块</button></div>
+    <div class="profile-actions"><button class="button primary" type="submit">保存档案</button><span class="muted">保存后请重新识别表单</span></div></form>`;
+  document.querySelector('#profile-text').addEventListener('input', event => { profileText = event.target.value; });
   document.querySelector('#profile-form').addEventListener('submit', async event => {
     event.preventDefault();
-    try { const next = validateProfile(collectProfile()); await setStored('profile', next); profile = next; rows = []; scanned = false; notice('档案已保存在本机。现在可以识别表单了。'); }
-    catch (error) { notice(error.message, true); }
-  });
-  document.querySelector('#import-profile').addEventListener('change', async event => {
-    const file = event.target.files[0];
-    if (!file) return;
+    if (busy) return;
+    busy = true;
     try {
-      if (file.size > 1000000) throw new Error('档案文件不能超过 1 MB。');
-      const imported = validateProfile(JSON.parse(await file.text()));
-      renderProfile(imported); notice('档案已导入到编辑区，请检查后保存。');
-    } catch (error) { notice(`导入失败：${error instanceof SyntaxError ? '不是有效的 JSON 文件' : error.message}`, true); }
+      const next = validateProfile(collectProfile());
+      // Preserve the original v1 snapshot once, before a successful v2 write.
+      if (storedProfile?.schemaVersion === 1 && !await getStored('profileV1Backup', null)) await setStored('profileV1Backup', storedProfile);
+      await setStored('profile', next); profile = next; profileDraft = structuredClone(next); rows = []; scanned = false;
+      memory = validateMemory(memory, profile);
+      try { await setStored('recognitionMemory', memory); notice('档案已保存在本机。现在可以识别表单了。'); }
+      catch { notice('档案已保存，旧识别记忆未能清理；已删除字段不会参与填写。', true); }
+      renderProfile();
+    } catch (error) { notice(error.message, true); }
+    finally { busy = false; }
   });
 }
 function collectProfile() {
-  const draft = emptyProfile();
-  for (const [path, value] of new FormData(document.querySelector('#profile-form'))) {
-    const [group, index, key] = path.split(':');
-    if (group === 'personal') draft.personal[key] = value;
-    else { draft[group][Number(index)] ??= {}; draft[group][Number(index)][key] = value; }
+  const draft = structuredClone(profileDraft);
+  for (const el of document.querySelectorAll('#profile-form [data-profile-input]')) {
+    const section = profileSection(draft, el.dataset.group), record = section.records[Number(el.dataset.index)];
+    if (el.dataset.profileInput === 'base') record[el.dataset.field] = el.value;
+    else {
+      const field = (section.custom ? record.fields : record.extraFields).find(field => field.id === el.dataset.field);
+      field[el.dataset.profileInput] = el.value;
+    }
   }
   return draft;
+}
+async function loadProfileText() {
+  let original;
+  try {
+    original = validateProfile(collectProfile());
+    if (!profileText.trim()) throw new Error('请先粘贴个人信息。');
+    if (profileText.length > 20000) throw new Error('粘贴文本最多支持 20000 字，请分批载入。');
+    if (!configurationReady(config, apiKey)) throw new Error('请先在智能识别中配置并保存模型和 API Key。');
+  } catch (error) { notice(error.message, true); return; }
+  busy = true;
+  const controls = [...document.querySelectorAll('#panel-content input,#panel-content textarea,#panel-content button')];
+  controls.forEach(el => { el.disabled = true; });
+  notice('正在整理个人信息…');
+  try {
+    if (isExtension && !await chrome.permissions.contains({ origins: [permissionOrigin(config)] })) throw new Error('未授权模型服务访问，请在智能识别中保存设置以授权。');
+    const extracted = await extractProfile(profileText, config, apiKey, original);
+    const merged = mergeExtraction(original, extracted);
+    renderProfile(merged.profile);
+    notice(`个人信息已载入编辑区，新增或补充 ${merged.added} 项${merged.conflicts ? `，保留原值或删除状态 ${merged.conflicts} 项` : ''}。请核对后保存档案。`);
+  } catch (error) { notice(`${failureMessage(error)} 原编辑内容和已保存档案未改变。`, true); }
+  finally { busy = false; controls.forEach(el => { el.disabled = false; }); }
 }
 function settingsConfig(form) {
   const data = new FormData(form);
@@ -127,7 +168,7 @@ function failureMessage(error) {
 }
 function renderSettings() {
   document.querySelector('#panel-content').innerHTML = `<div class="panel-intro"><h3>让歧义字段更容易理解</h3><p>点击识别后，先使用规则和本地识别记忆，再自动用模型分析待确认字段。填写前仍由你核对。</p></div>
-    <div class="privacy-box">${icon('shield', 23)}<div><strong>发送结构，档案留在本地</strong><p>自动分析会向所选服务商发送过滤后的标签、控件类型、选项和分组；不发送档案值、已有输入值、网页地址或 HTML。标签和选项仍可能包含个人信息，可关闭自动智能识别。</p></div></div>
+    <div class="privacy-box">${icon('shield', 23)}<div><strong>发送结构，档案留在本地</strong><p>网页自动分析会向所选服务商发送过滤后的标签、控件类型、选项和分组；不发送档案值、已有输入值、网页地址或 HTML。标签和选项仍可能包含个人信息，可关闭自动智能识别。</p></div></div>
     <form id="settings-form" class="settings-form">
     <label class="auto-toggle"><input name="autoInfer" type="checkbox" ${config.autoInfer ? 'checked' : ''}> 自动智能识别<span>开关立即保存；关闭后仅使用规则与识别记忆。</span></label>
     <label>服务商<select name="provider"><option value="deepseek" ${config.provider === 'deepseek' ? 'selected' : ''}>DeepSeek</option><option value="custom" ${config.provider === 'custom' ? 'selected' : ''}>自定义兼容接口</option></select></label>
@@ -138,7 +179,7 @@ function renderSettings() {
     <div class="settings-actions"><button class="button primary" type="submit">保存模型设置</button><button class="button secondary" id="test-key" type="button">测试 API Key</button></div>
     <p class="small-note">测试使用当前输入的配置，不自动保存，不发送网页或档案信息，可能产生少量费用。</p></form>
     <div class="memory-actions"><button class="button secondary" id="clear-memory">清空识别记忆</button><p class="small-note">确认填写成功后积累字段映射。记忆仅保存在本机，清空不影响个人档案。</p></div>
-    <details class="payload-details"><summary>查看待发送的字段结构（${rows.filter(r => !r.path).length} 个字段）</summary><pre>${esc(JSON.stringify(modelPayload(rows.filter(r => !r.path)), null, 2))}</pre></details>`;
+    <details class="payload-details"><summary>查看待发送的字段结构（${rows.filter(r => !r.path).length} 个字段）</summary><pre>${esc(JSON.stringify(modelPayload(rows.filter(r => !r.path), profile), null, 2))}</pre></details>`;
   const form = document.querySelector('#settings-form');
   form.elements.provider.addEventListener('change', () => {
     const deepseek = form.elements.provider.value === 'deepseek';
@@ -195,7 +236,7 @@ async function automaticallyInfer() {
       throw new Error('未授权模型服务访问，请在智能识别中保存设置以授权；可继续手动选择。');
     }
     notice('正在自动分析待确认字段…');
-    const mappings = await inferMappings(unresolved, config, apiKey);
+    const mappings = await inferMappings(unresolved, config, apiKey, fetch, profile);
     for (const mapping of mappings) {
       const row = rows.find(r => r.id === mapping.fieldId);
       if (mapping.profilePath) { row.path = mapping.profilePath; row.source = '模型建议'; row.selected = false; }
@@ -208,19 +249,24 @@ document.querySelector('#app').addEventListener('click', async event => {
   const button = event.target.closest('button');
   if (!button || button.disabled || busy) return;
   if (button.dataset.tab || button.hasAttribute('data-go-profile')) {
+    if (activeTab === 'profile') profileDraft = collectProfile();
     activeTab = button.dataset.tab || 'profile'; notice(''); render(); return;
   }
-  if (button.dataset.add) {
-    const draft = collectProfile(), group = button.dataset.add;
-    if (draft[group].length >= 20) return notice('最多支持 20 段经历。', true);
-    draft[group].push(Object.fromEntries(SCHEMA.filter(s => s.path.startsWith(group)).map(s => [s.path.split('.').at(-1), '']))); renderProfile(draft); return;
-  }
-  if (button.dataset.remove) { const draft = collectProfile(); const [group, index] = button.dataset.remove.split(':'); draft[group].splice(Number(index), 1); renderProfile(draft); return; }
-  if (button.id === 'sample-profile') { renderProfile(sampleProfile()); notice('已载入虚构演示档案，请点击“保存档案”后使用。'); return; }
-  if (button.id === 'export-profile') {
-    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob), link = document.createElement('a');
-    link.href = url; link.download = 'zheg-profile.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); return;
+  if (button.id === 'load-profile') { await loadProfileText(); return; }
+  if (button.dataset.addRecord || button.dataset.removeRecord || button.dataset.deleteField || button.dataset.addField || button.dataset.removeSection || button.id === 'add-section') {
+    try {
+      let draft = collectProfile();
+      if (button.dataset.addRecord) draft = addProfileRecord(draft, button.dataset.addRecord);
+      else if (button.dataset.removeRecord) { const [group, index] = button.dataset.removeRecord.split(':'); draft = removeProfileRecord(draft, group, Number(index)); }
+      else if (button.dataset.deleteField) { const [group, index, id] = button.dataset.deleteField.split(':'); draft = removeProfileField(draft, group, Number(index), id); }
+      else if (button.dataset.addField) {
+        const [group, index] = button.dataset.addField.split(':'), adder = button.closest('.information-adder');
+        draft = addProfileField(draft, group, Number(index), adder.querySelector('[data-new-label]').value, adder.querySelector('[data-new-value]').value);
+      } else if (button.dataset.removeSection) draft = removeProfileSection(draft, button.dataset.removeSection);
+      else draft = addProfileSection(draft, document.querySelector('#new-section-title').value);
+      renderProfile(draft); notice('编辑内容已更新，请检查后保存档案。');
+    } catch (error) { notice(error.message, true); }
+    return;
   }
   if (button.id === 'reset-demo') { rows = []; scanned = false; lastScan = ''; if (activeTab === 'preview') renderPreview(); notice('演示表单已重置，可以重新识别。'); return; }
   if (button.id === 'clear-memory') {
@@ -237,7 +283,7 @@ document.querySelector('#app').addEventListener('click', async event => {
     if (action === 'scan') {
       const result = await scanPage();
       pageOrigin = result.origin;
-      rows = applyMemory(matchFields(result.fields, profile), memory, pageOrigin); scanned = true; pageTitle = result.title;
+      rows = applyMemory(matchFields(result.fields, profile), memory, pageOrigin, profile); scanned = true; pageTitle = result.title;
       lastScan = result.unsupported ? `另有 ${result.unsupported} 个控件暂不支持` : '最终提交由你完成';
       await automaticallyInfer();
       if (result.truncated) notice(`${document.querySelector('#notice').textContent} 页面字段较多，仅识别前 200 个可用字段。`);
@@ -257,19 +303,27 @@ document.querySelector('#app').addEventListener('click', async event => {
       }
       const count = type => rows.filter(r => r.selected && r.result === type).length;
       const summary = `填写完成：成功 ${count('success')} 项，保留已有内容 ${count('skipped')} 项，需手动处理 ${count('failed')} 项。`;
-      const next = learnMappings(memory, rows, pageOrigin);
+      const next = learnMappings(memory, rows, pageOrigin, profile);
       try { await setStored('recognitionMemory', next); memory = next; notice(summary); }
       catch { notice(`${summary} 识别记忆保存失败，本次填写结果不受影响。`, true); }
     }
   } catch (error) { notice(error.name === 'TimeoutError' ? '模型请求超时，可继续手动选择档案字段。' : error.message || '操作失败，请重试。', true); }
   finally { busy = false; renderPreview(); }
 });
+document.querySelector('#app').addEventListener('input', event => {
+  const el = event.target;
+  if (el.dataset.profileInput === 'label') {
+    for (const other of document.querySelectorAll('[data-profile-input=label]')) {
+      if (other.dataset.group === el.dataset.group && other.dataset.field === el.dataset.field) other.value = el.value;
+    }
+  }
+});
 document.querySelector('#app').addEventListener('change', event => {
   if (busy) return;
   const el = event.target;
-  if (el.dataset.group) {
-    const kind = sectionKind(rows.find(r => r.groupId === el.dataset.group).section);
-    for (const row of rows.filter(r => r.groupId === el.dataset.group && r.path.startsWith(kind))) { row.index = Number(el.value); row.status = ''; }
+  if (el.matches('.record-picker') && el.dataset.group) {
+    const kind = groupForSection(rows.find(r => r.groupId === el.dataset.group).section, profile);
+    for (const row of rows.filter(r => r.groupId === el.dataset.group && profileSchema(profile).find(s => s.path === r.path)?.sectionId === kind)) { row.index = Number(el.value); row.status = ''; }
     renderPreview(); return;
   }
   const row = rows.find(r => r.id === (el.dataset.map || el.dataset.select || el.dataset.overwrite));

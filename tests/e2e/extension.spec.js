@@ -2,6 +2,7 @@ import { test, expect, chromium } from '@playwright/test';
 import { mkdtemp, cp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { sampleProfile, profileSections, fieldsForRecord } from '../../src/profile.js';
 
 test('打包扩展：MV3、存储、真实注入通信、填写和页面切换保护', async () => {
   test.setTimeout(60000);
@@ -28,11 +29,41 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     const form = await context.newPage();
     await form.goto('http://127.0.0.1:5188');
     const panel = await context.newPage();
+    const runtimeErrors = [];
+    panel.on('pageerror', error => runtimeErrors.push(error.message));
     await panel.goto(`chrome-extension://${extensionId}/workspace.html`);
     await expect(panel.locator('body')).toHaveClass('extension');
+    await expect(panel.locator('.tip-card')).not.toContainText('JSON');
     await panel.getByRole('button', { name: '本地档案', exact: true }).click();
     await expect(panel.locator('input[name="personal:0:fullName"]')).toHaveValue('');
-    await panel.getByRole('button', { name: '载入虚构演示档案' }).click();
+    await panel.locator('#profile-text').fill('未配置时的虚构文本');
+    await panel.getByRole('button', { name: '载入个人信息' }).click();
+    await expect(panel.getByRole('status')).toContainText('请先在智能识别中配置');
+    await panel.getByRole('button', { name: '智能识别', exact: true }).click();
+    await panel.locator('select[name=provider]').selectOption('custom');
+    await panel.locator('input[name=baseURL]').fill('http://127.0.0.1:5188/mock');
+    await panel.locator('input[name=model]').fill('mock-model');
+    await panel.locator('input[name=apiKey]').fill('fake-extension-key');
+    await panel.getByRole('button', { name: '保存模型设置' }).click();
+    await expect(panel.getByRole('status')).toContainText('模型设置已保存');
+    const fixture = sampleProfile();
+    const extracted = { sections: profileSections(fixture).filter(s => s.records.length).map(s => ({ title: s.title, records: s.records.map((_, i) => ({ fields: fieldsForRecord(fixture, s.id, i).map(({ label, value, type }) => ({ label, value, type })) })) })) };
+    await context.route('http://127.0.0.1:5188/mock/chat/completions', async route => {
+      const body = route.request().postDataJSON(), input = JSON.parse(body.messages[1].content);
+      expect(input.text).toBe('虚构测试简历');
+      expect(JSON.stringify(input.outline)).not.toContain('林知夏');
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(extracted) } }] }) });
+    });
+    await panel.getByRole('button', { name: '本地档案', exact: true }).click();
+    await panel.locator('#profile-text').fill('虚构测试简历');
+    await panel.getByRole('button', { name: '载入个人信息' }).click();
+    await expect(panel.getByRole('status')).toContainText('个人信息已载入编辑区');
+    expect(await worker.evaluate(async () => (await chrome.storage.local.get('profile')).profile)).toBeUndefined();
+    await expect(panel.locator('input[name="personal:0:fullName"]')).toHaveValue('林知夏');
+    await panel.getByRole('button', { name: '智能识别', exact: true }).click();
+    await panel.locator('input[name=autoInfer]').uncheck();
+    await expect(panel.getByRole('status')).toContainText('已关闭');
+    await panel.getByRole('button', { name: '本地档案', exact: true }).click();
     await panel.getByRole('button', { name: '保存档案', exact: true }).click();
     await panel.getByRole('button', { name: '填写预览', exact: true }).click();
     await form.bringToFront();
@@ -63,7 +94,9 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     await panel.locator('input[name=apiKey]').fill('fake-extension-key');
     await panel.getByRole('button', { name: '测试 API Key' }).click();
     await expect(panel.getByRole('status')).toContainText('连接测试成功');
-    expect(await worker.evaluate(async () => (await chrome.storage.local.get('modelConfig')).modelConfig)).toBeUndefined();
+    expect((await worker.evaluate(async () => (await chrome.storage.local.get('modelConfig')).modelConfig)).autoInfer).toBe(false);
+    await panel.locator('input[name=autoInfer]').check();
+    await expect(panel.getByRole('status')).toContainText('已开启');
     await panel.getByRole('button', { name: '保存模型设置' }).click();
     await expect(panel.getByRole('status')).toContainText('模型设置已保存');
     expect(await worker.evaluate(async () => (await chrome.storage.session.get('modelKey')).modelKey)).toBe('fake-extension-key');
@@ -113,6 +146,14 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     await expect(panel.getByRole('status')).toContainText('未授权模型服务访问');
     await expect(panel.getByRole('button', { name: '确认填写', exact: true })).toBeEnabled();
     expect(deniedCalls).toBe(0);
+    await panel.getByRole('button', { name: '本地档案', exact: true }).click();
+    await panel.locator('#profile-text').fill('权限拒绝的虚构信息');
+    const profileBefore = await worker.evaluate(async () => (await chrome.storage.local.get('profile')).profile);
+    await panel.getByRole('button', { name: '载入个人信息' }).click();
+    await expect(panel.getByRole('status')).toContainText('未授权模型服务访问');
+    expect(await worker.evaluate(async () => (await chrome.storage.local.get('profile')).profile)).toEqual(profileBefore);
+    expect(deniedCalls).toBe(0);
+    expect(runtimeErrors).toEqual([]);
 
   } finally {
     await context?.close();

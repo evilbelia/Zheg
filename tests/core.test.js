@@ -9,7 +9,7 @@ const field = (label, section = '未分组', type = 'text', id = 'f1', groupId =
 test('档案只接受有效结构并剔除未知属性', () => {
   const input = { ...sampleProfile(), secret: 'discard' };
   assert.deepEqual(validateProfile(input), sampleProfile());
-  for (const invalid of [null, [], {}, { ...input, schemaVersion: 2 }, { ...input, personal: null }, { ...input, education: Array(21).fill({}) }]) assert.throws(() => validateProfile(invalid));
+  for (const invalid of [null, [], {}, { ...input, schemaVersion: 3 }, { ...input, personal: null }, { ...input, education: Array(21).fill({}) }]) assert.throws(() => validateProfile(invalid));
   assert.throws(() => validateProfile({ ...input, personal: { phone: 123 } }));
   assert.throws(() => validateProfile({ ...input, education: [{ startDate: '2024-99' }] }));
   assert.throws(() => validateProfile({ ...input, personal: { fullName: 'x'.repeat(5001) } }));
