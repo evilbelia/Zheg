@@ -4,6 +4,78 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sampleProfile, profileSections, fieldsForRecord } from '../../src/profile.js';
 
+test('REQ-20261009-05 真实扩展浏览器重启恢复、请求鉴权、可信存储与清除后重启', async () => {
+  test.setTimeout(60000);
+  const temp = await mkdtemp(join(tmpdir(), 'zheg-key-restart-'));
+  let context;
+  try {
+    const extensionPath = join(temp, 'extension');
+    await cp(resolve('dist'), extensionPath, { recursive: true });
+    const manifest = JSON.parse(await readFile(join(extensionPath, 'manifest.json'), 'utf8'));
+    manifest.host_permissions = ['http://127.0.0.1/*']; // Harness only, for content-script access rejection check.
+    await writeFile(join(extensionPath, 'manifest.json'), JSON.stringify(manifest));
+    const launch = async () => {
+      context = await chromium.launchPersistentContext(join(temp, 'browser'), {
+        channel: 'chromium', executablePath: chromium.executablePath(), headless: true, timeout: 15000,
+        args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
+      });
+      const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 10000 });
+      const panel = await context.newPage();
+      panel.on('pageerror', error => errors.push(error.message));
+      await panel.goto(`chrome-extension://${new URL(worker.url()).host}/workspace.html`);
+      await panel.getByRole('button', { name: '智能识别', exact: true }).click();
+      return { panel, worker };
+    };
+    const errors = [];
+    let { panel, worker } = await launch();
+    await panel.locator('select[name=provider]').selectOption('custom');
+    await panel.locator('input[name=baseURL]').fill('http://127.0.0.1:5188/mock');
+    await panel.locator('input[name=model]').fill('mock-model');
+    await panel.locator('input[name=apiKey]').fill('restart-fake-key');
+    await panel.getByRole('button', { name: '保存模型设置' }).click();
+    await expect(panel.getByRole('status')).toContainText('模型设置已保存');
+    // Close the entire browser, rather than reloading a panel or service worker.
+    await context.close();
+    ({ panel, worker } = await launch());
+    await expect(panel.locator('input[name=apiKey]')).toHaveValue('restart-fake-key');
+    await expect(panel.locator('input[name=baseURL]')).toHaveValue('http://127.0.0.1:5188/mock');
+    expect(await worker.evaluate(async () => (await chrome.storage.session.get('modelKey')).modelKey)).toBeUndefined();
+    let calls = 0;
+    await context.route('http://127.0.0.1:5188/mock/chat/completions', async route => {
+      calls++;
+      expect(route.request().headers().authorization).toBe('Bearer restart-fake-key');
+      expect(route.request().postData()).not.toContain('restart-fake-key');
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: 'OK' } }] }) });
+    });
+    await panel.getByRole('button', { name: '测试 API Key' }).click();
+    await expect(panel.getByRole('status')).toContainText('连接测试成功');
+    expect(calls).toBe(1);
+    const webPage = await context.newPage();
+    await webPage.goto('http://127.0.0.1:5188');
+    const denied = await worker.evaluate(async () => {
+      const [tab] = await chrome.tabs.query({ url: 'http://127.0.0.1:5188/*' });
+      const [result] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: async () => {
+        try { await chrome.storage.local.get('modelCredential'); return false; }
+        catch { return true; }
+      } });
+      return result.result;
+    });
+    expect(denied).toBe(true);
+    await worker.evaluate(() => chrome.storage.local.set({ profile: { marker: 'profile-unchanged' }, recognitionMemory: { marker: 'memory-unchanged' } }));
+    const before = await worker.evaluate(() => chrome.storage.local.get(['profile', 'modelConfig', 'recognitionMemory']));
+    await panel.getByRole('button', { name: '清除已保存 API Key' }).click();
+    await expect(panel.getByRole('status')).toContainText('API Key 已清除');
+    await context.close();
+    ({ panel, worker } = await launch());
+    await expect(panel.locator('input[name=apiKey]')).toHaveValue('');
+    expect(await worker.evaluate(() => chrome.storage.local.get(['profile', 'modelConfig', 'recognitionMemory']))).toEqual(before);
+    expect(errors).toEqual([]);
+  } finally {
+    await context?.close();
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test('打包扩展：MV3、存储、真实注入通信、填写和页面切换保护', async () => {
   test.setTimeout(60000);
   const temp = await mkdtemp(join(tmpdir(), 'zheg-extension-'));
@@ -99,8 +171,9 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     await expect(panel.getByRole('status')).toContainText('已开启');
     await panel.getByRole('button', { name: '保存模型设置' }).click();
     await expect(panel.getByRole('status')).toContainText('模型设置已保存');
-    expect(await worker.evaluate(async () => (await chrome.storage.session.get('modelKey')).modelKey)).toBe('fake-extension-key');
-    expect(JSON.stringify(await worker.evaluate(() => chrome.storage.local.get(null)))).not.toContain('fake-extension-key');
+    expect(await worker.evaluate(async () => (await chrome.storage.session.get('modelKey')).modelKey)).toBeUndefined();
+    expect(await worker.evaluate(async () => (await chrome.storage.local.get('modelCredential')).modelCredential.key)).toBe('fake-extension-key');
+    expect(JSON.stringify(await worker.evaluate(() => chrome.storage.local.get(['profile', 'modelConfig', 'recognitionMemory'])))).not.toContain('fake-extension-key');
     await panel.getByRole('button', { name: '填写预览', exact: true }).click();
     await form.bringToFront();
     await panel.getByRole('button', { name: '重新识别', exact: true }).click();
@@ -135,6 +208,7 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     await context.route('https://api.deepseek.com/**', route => { deniedCalls++; return route.abort(); });
     await panel.getByRole('button', { name: '智能识别', exact: true }).click();
     await panel.locator('select[name=provider]').selectOption('deepseek');
+    await panel.locator('input[name=apiKey]').fill('fake-deepseek-key');
     await panel.evaluate(() => { chrome.permissions.request = async () => false; });
     await panel.getByRole('button', { name: '测试 API Key' }).click();
     await expect(panel.getByRole('status')).toContainText('未授权模型服务访问');

@@ -78,6 +78,100 @@ async function configureCustom(page, { auto = true, key = 'test-secret' } = {}) 
 }
 const completion = content => JSON.stringify({ choices: [{ message: { content } }] });
 
+test('REQ-20261009-05 演示保存、刷新、关闭重开、替换与清除密钥', async ({ page, context }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await page.getByRole('button', { name: '保存档案', exact: true }).click();
+  await configureCustom(page);
+  await page.reload();
+  await page.getByRole('button', { name: '智能识别', exact: true }).click();
+  await expect(page.locator('input[name=apiKey]')).toHaveValue('test-secret');
+  await expect(page.locator('input[name=apiKey]')).toHaveAttribute('type', 'password');
+  await page.close();
+  const reopened = await context.newPage();
+  const errors = [];
+  reopened.on('pageerror', error => errors.push(error.message));
+  await reopened.goto('/');
+  await reopened.getByRole('button', { name: '智能识别', exact: true }).click();
+  await expect(reopened.locator('input[name=apiKey]')).toHaveValue('test-secret');
+  await reopened.locator('input[name=apiKey]').fill('replacement-fake');
+  await reopened.getByRole('button', { name: '保存模型设置' }).click();
+  await expect(reopened.getByRole('status')).toContainText('模型设置已保存');
+  await reopened.reload();
+  await reopened.getByRole('button', { name: '智能识别', exact: true }).click();
+  await expect(reopened.locator('input[name=apiKey]')).toHaveValue('replacement-fake');
+  let calls = 0;
+  await reopened.route('https://model.example/**', async route => {
+    calls++;
+    expect(route.request().headers().authorization).toBe('Bearer replacement-fake');
+    expect(route.request().postData()).not.toContain('replacement-fake');
+    await route.fulfill({ contentType: 'application/json', body: completion('OK') });
+  });
+  await reopened.getByRole('button', { name: '测试 API Key' }).click();
+  await expect(reopened.getByRole('status')).toContainText('连接测试成功');
+  expect(calls).toBe(1);
+  const before = await reopened.evaluate(() => [localStorage.getItem('zheg:profile'), localStorage.getItem('zheg:modelConfig'), localStorage.getItem('zheg:recognitionMemory')]);
+  await reopened.getByRole('button', { name: '清除已保存 API Key' }).click();
+  await expect(reopened.getByRole('status')).toContainText('API Key 已清除');
+  await reopened.reload();
+  await reopened.getByRole('button', { name: '智能识别', exact: true }).click();
+  await expect(reopened.locator('input[name=apiKey]')).toHaveValue('');
+  expect(await reopened.evaluate(() => [localStorage.getItem('zheg:profile'), localStorage.getItem('zheg:modelConfig'), localStorage.getItem('zheg:recognitionMemory')])).toEqual(before);
+  // DeepSeek cannot silently send a request after explicit clearing.
+  await reopened.locator('select[name=provider]').selectOption('deepseek');
+  await reopened.getByRole('button', { name: '测试 API Key' }).click();
+  await expect(reopened.getByRole('status')).toContainText('请先输入');
+  expect(errors).toEqual([]);
+});
+
+test('REQ-20261009-05 变更目标不带旧密钥，测试草稿不替换已保存凭据', async ({ page }) => {
+  await page.goto('/');
+  await configureCustom(page);
+  await page.getByRole('button', { name: '智能识别', exact: true }).click();
+  await page.locator('input[name=apiKey]').fill('unsaved-fake');
+  await page.route('https://model.example/**', route => route.fulfill({ contentType: 'application/json', body: completion('OK') }));
+  await page.getByRole('button', { name: '测试 API Key' }).click();
+  await expect(page.getByRole('status')).toContainText('连接测试成功');
+  await page.reload();
+  await page.getByRole('button', { name: '智能识别', exact: true }).click();
+  await expect(page.locator('input[name=apiKey]')).toHaveValue('test-secret');
+  await page.locator('input[name=baseURL]').fill('https://another.example/v1');
+  await expect(page.locator('input[name=apiKey]')).toHaveValue('');
+  await page.locator('input[name=apiKey]').fill('another-fake');
+  await page.locator('select[name=provider]').selectOption('deepseek');
+  await expect(page.locator('input[name=apiKey]')).toHaveValue('');
+});
+
+test('REQ-20261009-05 存储错误不假报成功、不泄露密钥，读取失败仍可手动匹配', async ({ page }) => {
+  await page.goto('/');
+  await configureCustom(page);
+  await page.getByRole('button', { name: '智能识别', exact: true }).click();
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key === 'zheg:modelCredential') throw new Error('test-secret');
+      return original.call(this, key, value);
+    };
+  });
+  await page.locator('input[name=apiKey]').fill('replacement-fake');
+  await page.getByRole('button', { name: '保存模型设置' }).click();
+  await expect(page.getByRole('status')).toContainText('保存失败');
+  await page.getByRole('button', { name: '清除已保存 API Key' }).click();
+  await expect(page.getByRole('status')).toContainText('清除失败');
+  await expect(page.getByRole('status')).not.toContainText('test-secret');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('zheg:modelCredential')).key)).toBe('test-secret');
+  await page.reload();
+  await page.evaluate(() => localStorage.setItem('zheg:modelCredential', '{invalid'));
+  await page.reload();
+  await expect(page.getByRole('status')).toContainText('API Key 读取或迁移失败');
+  await page.getByRole('button', { name: '智能识别', exact: true }).click();
+  await expect(page.locator('input[name=apiKey]')).toHaveValue('');
+  await page.locator('input[name=autoInfer]').uncheck();
+  await page.getByRole('button', { name: '填写预览', exact: true }).click();
+  await page.getByRole('button', { name: '识别表单', exact: true }).click();
+  await expect(page.getByRole('button', { name: '确认填写', exact: true })).toBeEnabled();
+});
+
 test('自动模型 mock：仅发送待确认字段，确认成功后复用记忆，刷新恢复与清空', async ({ page }) => {
   await page.goto('/');
   let calls = 0;
@@ -107,7 +201,8 @@ test('自动模型 mock：仅发送待确认字段，确认成功后复用记忆
   expect(stored.entries).toHaveLength(1);
   expect(stored.entries[0].path).toBe('personal.fullName');
   expect(JSON.stringify(stored)).not.toContain('林知夏');
-  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain('test-secret');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('zheg:modelCredential')).key)).toBe('test-secret');
+  expect(await page.evaluate(() => JSON.stringify(['profile', 'modelConfig', 'recognitionMemory'].map(key => localStorage.getItem(`zheg:${key}`))))).not.toContain('test-secret');
   await page.reload();
   await page.locator('input[name=referral]').evaluate(el => el.closest('label').remove());
   await page.getByRole('button', { name: '识别表单', exact: true }).click();

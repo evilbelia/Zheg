@@ -4,7 +4,7 @@ import { matchFields, fillValue, groupForSection } from './matching.js';
 import { inferMappings, modelPayload, testConnection } from './model.js';
 import { normalizeConfig, validateConfig, configurationReady, permissionOrigin, DEEPSEEK_MODELS, DEEPSEEK_URL } from './model-config.js';
 import { emptyMemory, validateMemory, applyMemory, learnMappings } from './recognition-memory.js';
-import { getStored, setStored, isExtension, getSessionKey, setSessionKey } from './storage.js';
+import { getStored, setStored, isExtension, getSavedKey, saveModelSettings, clearSavedKey } from './storage.js';
 import { scanPage, fillPage } from './adapter.js';
 import { demoForm } from './demo.js';
 import { extractProfile, mergeExtraction } from './profile-extraction.js';
@@ -28,7 +28,9 @@ catch { profile = emptyProfile(); }
 let config = normalizeConfig(await getStored('modelConfig', {}));
 let memory = validateMemory(await getStored('recognitionMemory', emptyMemory()), profile);
 let profileDraft = structuredClone(profile), profileText = '';
-let apiKey = await getSessionKey();
+let apiKey = '', keyLoadError = '';
+try { apiKey = await getSavedKey(config); }
+catch (error) { keyLoadError = error.message; }
 let rows = [], activeTab = 'preview', busy = false, scanned = false, pageTitle = '', lastScan = '', pageOrigin = '';
 
 document.body.classList.toggle('extension', isExtension);
@@ -175,18 +177,20 @@ function renderSettings() {
     <label>服务地址<span>兼容 Chat Completions 接口的 API 根地址</span><input name="baseURL" type="url" value="${esc(config.baseURL)}" ${config.provider === 'deepseek' ? 'readonly' : ''} required></label>
     <label id="model-choice">模型名称${config.provider === 'deepseek' ? `<select name="model">${DEEPSEEK_MODELS.map(model => `<option ${config.model === model ? 'selected' : ''}>${model}</option>`).join('')}</select>` : `<input name="model" value="${esc(config.model)}" placeholder="服务商提供的模型名称" maxlength="200" required>`}</label>
     <label>API Key<input name="apiKey" type="password" autocomplete="off" placeholder="DeepSeek 必填，本地服务可留空" value="${esc(apiKey)}"></label>
-    <p class="small-note">密钥${isExtension ? '仅存于扩展会话存储，浏览器会话结束后需重新输入' : '仅保留在此页面内存，刷新后需重新输入'}。保存或测试时申请服务访问权限。请求超时 20 秒，失败可继续手动选择。</p>
-    <div class="settings-actions"><button class="button primary" type="submit">保存模型设置</button><button class="button secondary" id="test-key" type="button">测试 API Key</button></div>
+    <p class="small-note">点击保存后，密钥保存在${isExtension ? '本机扩展存储' : '当前浏览器的网站存储'}，重新打开或重启浏览器可恢复；不加密、不云同步。可随时清除。保存或测试时申请服务访问权限。请求超时 20 秒，失败可继续手动选择。</p>
+    <div class="settings-actions"><button class="button primary" type="submit">保存模型设置</button><button class="button secondary" id="test-key" type="button">测试 API Key</button><button class="button secondary" id="clear-key" type="button">清除已保存 API Key</button></div>
     <p class="small-note">测试使用当前输入的配置，不自动保存，不发送网页或档案信息，可能产生少量费用。</p></form>
     <div class="memory-actions"><button class="button secondary" id="clear-memory">清空识别记忆</button><p class="small-note">确认填写成功后积累字段映射。记忆仅保存在本机，清空不影响个人档案。</p></div>
     <details class="payload-details"><summary>查看待发送的字段结构（${rows.filter(r => !r.path).length} 个字段）</summary><pre>${esc(JSON.stringify(modelPayload(rows.filter(r => !r.path), profile), null, 2))}</pre></details>`;
   const form = document.querySelector('#settings-form');
   form.elements.provider.addEventListener('change', () => {
+    form.elements.apiKey.value = '';
     const deepseek = form.elements.provider.value === 'deepseek';
     form.elements.baseURL.readOnly = deepseek;
     form.elements.baseURL.value = deepseek ? DEEPSEEK_URL : (config.provider === 'custom' ? config.baseURL : '');
     document.querySelector('#model-choice').innerHTML = `模型名称${deepseek ? `<select name="model">${DEEPSEEK_MODELS.map(model => `<option>${model}</option>`).join('')}</select>` : `<input name="model" placeholder="服务商提供的模型名称" maxlength="200" value="${esc(config.provider === 'custom' ? config.model : '')}" required>`}`;
   });
+  form.elements.baseURL.addEventListener('input', () => { form.elements.apiKey.value = ''; });
   form.elements.autoInfer.addEventListener('change', async event => {
     const el = event.target, next = { ...config, autoInfer: el.checked };
     busy = true; el.disabled = true;
@@ -214,8 +218,7 @@ function renderSettings() {
         if (!allowed) throw new Error('未授权模型服务访问，无法测试连接。');
         notice(await testConnection(next, key));
       } else {
-        await setSessionKey(key);
-        await setStored('modelConfig', next);
+        await saveModelSettings(next, key);
         config = next; apiKey = key;
         notice(allowed ? '模型设置已保存。下次识别表单时将按开关设置自动分析。' : '设置已保存，但未授权模型服务访问；识别时仅使用本地匹配。可重新保存设置以授权。', !allowed);
       }
@@ -224,6 +227,17 @@ function renderSettings() {
   };
   form.addEventListener('submit', event => run(event, false));
   document.querySelector('#test-key').addEventListener('click', event => run(event, true));
+  document.querySelector('#clear-key').addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
+    const controls = [...form.querySelectorAll('input,select,button')];
+    controls.forEach(el => { el.disabled = true; });
+    try {
+      await clearSavedKey(config); apiKey = ''; form.elements.apiKey.value = '';
+      notice('已保存的 API Key 已清除，档案、模型配置和识别记忆保持不变。');
+    } catch (error) { notice(failureMessage(error), true); }
+    finally { busy = false; controls.forEach(el => { el.disabled = false; }); }
+  });
 }
 async function automaticallyInfer() {
   const unresolved = rows.filter(row => !row.path);
@@ -325,3 +339,4 @@ document.querySelector('#app').addEventListener('change', event => {
   else row.override = el.checked;
 });
 render();
+if (keyLoadError) notice(keyLoadError, true);
