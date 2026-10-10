@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { sampleProfile, addProfileField } from '../../src/profile.js';
+import { chooseSource } from './source-picker-helper.js';
+import { sampleProfile, addProfileField, addProfileSection, removeProfileField } from '../../src/profile.js';
 
 const runtimeErrors = new WeakMap();
 test.beforeEach(async ({ page }) => {
@@ -24,8 +25,7 @@ test('完整演示：识别不填、上下文映射、多段经历、手动映�
   const nameRow = page.locator('.preview-row').filter({ has: page.getByRole('checkbox', { name: '填写 姓名 *', exact: true }) });
   await nameRow.locator('input[type=checkbox]').uncheck();
   const preferred = page.locator('.preview-row').filter({ hasText: '你的称呼' });
-  await preferred.locator('.section-select').selectOption('personal');
-  await preferred.locator('.field-select').selectOption('personal.fullName::0');
+  await chooseSource(preferred, 'personal', 'personal.fullName::0');
   await page.getByRole('button', { name: '确认填写', exact: true }).click();
   await expect(page.locator('#application-form input[name=applicantName]')).toHaveValue('');
   await expect(page.locator('#application-form input[name=preferredName]')).toHaveValue('林知夏');
@@ -97,34 +97,39 @@ test('REQ-20261010-03 规则空值进入模型复核，缺失记录明确显示�
   await expect(major).toContainText('模型建议');
   await expect(major.locator('.value-preview')).toContainText('虚构方向');
   await expect(major.locator('input[type=checkbox]')).not.toBeChecked();
-  await expect(major.locator('.section-select')).toHaveValue('education');
-  await expect(major.locator('.field-select')).toHaveValue(`${extraPath}::0`);
+  await expect(major.locator('.source-trigger')).toContainText('教育经历');
+  await expect(major.locator('.source-trigger')).toHaveAttribute('data-value', `${extraPath}::0`);
   await expect(secondSchool.locator('.value-preview')).toContainText('无对应档案记录');
-  await expect(secondSchool.locator('.field-select')).toHaveValue('');
+  await expect(secondSchool.locator('.source-trigger')).toHaveAttribute('data-value', '');
   await expect(groups.nth(1).locator('.record-picker')).toHaveValue('');
   await expect(secondSchool.locator('input[type=checkbox]')).not.toBeChecked();
   const personal = groups.nth(1).locator('.preview-row').filter({ hasText: '本人姓名' });
   await expect(personal.locator('.value-preview')).toContainText('林知夏');
-  await expect(personal.locator('.field-select')).toHaveValue('personal.fullName::0');
+  await expect(personal.locator('.source-trigger')).toHaveAttribute('data-value', 'personal.fullName::0');
   const date = groups.nth(0).locator('.preview-row').filter({ hasText: '开始时间' });
   await expect(date.locator('.value-preview')).toContainText('已保存档案中此字段为空');
-  expect(await date.locator('.section-select option').allTextContents()).not.toContain('基本信息');
+  await date.locator('.source-trigger').click();
+  await expect(date.locator('[data-source-module=personal]')).toHaveCount(0);
+  await page.keyboard.press('Escape');
   await expect(page.locator('#application-form input[name=eduStart1]')).toHaveValue('');
-  // The field menu only contains compatible education fields, grouped by record.
-  expect(await major.locator('.field-select option').allTextContents()).not.toContain('姓名');
-  await expect(major.locator('.field-select optgroup')).toHaveCount(1);
-  await major.locator('.section-select').selectOption('personal');
-  await expect(major.locator('.field-select')).toHaveValue('');
+  // Browsing modules preserves the old mapping until a field is selected.
+  await major.locator('.source-trigger').click();
+  await major.locator('[data-source-module=education]').click();
+  expect(await major.locator('[data-source-field]').allTextContents()).not.toContain('姓名');
+  await expect(major.locator('.source-menu [role=group]')).toHaveCount(1);
+  await major.locator('[data-source-back]').click();
+  await major.locator('[data-source-module=personal]').click();
+  await expect(major.locator('.source-trigger')).toHaveAttribute('data-value', `${extraPath}::0`);
   await expect(major.locator('input[type=checkbox]')).not.toBeChecked();
-  expect(await major.locator('.field-select option').allTextContents()).not.toContain('学校');
-  await major.locator('.field-select').selectOption('personal.fullName::0');
+  expect(await major.locator('[data-source-field]').allTextContents()).not.toContain('学校');
+  await major.locator('[data-source-field="personal.fullName"]').click();
   await expect(major.locator('.value-preview')).toContainText('林知夏');
   // Changing the education group must not change the manually chosen personal source.
   await groups.nth(0).locator('.record-picker').selectOption('0');
-  await expect(major.locator('.field-select')).toHaveValue('personal.fullName::0');
+  await expect(major.locator('.source-trigger')).toHaveAttribute('data-value', 'personal.fullName::0');
   await groups.nth(1).locator('.record-picker').selectOption('0');
   await expect(secondSchool.locator('.value-preview')).toContainText('浙江大学');
-  await expect(secondSchool.locator('.field-select')).toHaveValue('education[].school::0');
+  await expect(secondSchool.locator('.source-trigger')).toHaveAttribute('data-value', 'education[].school::0');
   await expect(secondSchool.locator('input[type=checkbox]')).toBeChecked();
   await page.getByRole('button', { name: '确认填写', exact: true }).click();
   await expect(page.locator('#application-form input[name=school2]')).toHaveValue('浙江大学');
@@ -141,7 +146,7 @@ test('REQ-20261010-03 规则空值进入模型复核，缺失记录明确显示�
   await expect(page.getByRole('status')).toContainText('HTTP 500');
   await expect(firstSchool.locator('.value-preview')).toContainText('浙江大学');
   await expect(secondSchool.locator('.value-preview')).toContainText('无对应档案记录');
-  await expect(major.locator('.field-select')).toHaveValue('education[].major::0');
+  await expect(major.locator('.source-trigger')).toHaveAttribute('data-value', 'education[].major::0');
   await expect(major.locator('.value-preview')).toContainText('已保存档案中此字段为空');
 });
 
@@ -326,8 +331,7 @@ test('关闭自动智能识别立即生效并持久化；手动成功映射仍�
   const row = page.locator('.preview-row').filter({ hasText: '你的称呼' });
   await expect(row).toContainText('需要确认');
   await expect(page.locator('#infer')).toHaveCount(0);
-  await row.locator('.section-select').selectOption('personal');
-  await row.locator('.field-select').selectOption('personal.fullName::0');
+  await chooseSource(row, 'personal', 'personal.fullName::0');
   await page.getByRole('button', { name: '确认填写', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('填写完成');
   await page.getByRole('button', { name: '重新识别', exact: true }).click();
@@ -350,8 +354,7 @@ test('全匹配不调用模型；自动模型失败仍可手动填写', async ({
   await page.getByRole('button', { name: '识别表单', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('HTTP 500');
   await expect(page.getByRole('status')).not.toContainText('test-secret');
-  await page.locator('.preview-row').filter({ hasText: '你的称呼' }).locator('.section-select').selectOption('personal');
-  await page.locator('.preview-row').filter({ hasText: '你的称呼' }).locator('.field-select').selectOption('personal.fullName::0');
+  await chooseSource(page.locator('.preview-row').filter({ hasText: '你的称呼' }), 'personal', 'personal.fullName::0');
   await page.getByRole('button', { name: '确认填写' }).click();
   await expect(page.locator('input[name=preferredName]')).toHaveValue('林知夏');
   expect(calls).toBe(1);
@@ -713,4 +716,93 @@ test('REQ-20261009-04 新增后标题固定，内容可编辑保存，删除及�
   await expect(page.getByRole('textbox', { name: '通信邮编内容', exact: true })).toHaveValue('310002');
   await expect(page.getByRole('button', { name: '删除通信邮编', exact: true })).toBeVisible();
   await expect(page.locator('[data-profile-input=label]')).toHaveCount(0);
+});
+
+
+test('REQ-20261010-04 单个级联来源：取消不改值、键盘导航、清除与只打开一个菜单', async ({ page }) => {
+  await page.goto('/');
+  let calls = 0;
+  await page.route('https://model.example/**', route => { calls++; return route.abort(); });
+  await configureCustom(page, { auto: false });
+  await page.getByRole('button', { name: '识别表单', exact: true }).click();
+  const row = page.locator('.preview-row').filter({ has: page.getByRole('checkbox', { name: '填写 姓名 *', exact: true }) });
+  const other = page.locator('.preview-row').filter({ hasText: '你的称呼' });
+  const trigger = row.locator('.source-trigger');
+  expect(await page.locator('.source-trigger').count()).toBe(await page.locator('.preview-row').count());
+  await expect(page.locator('.preview-row select')).toHaveCount(0);
+  await expect(page.locator('.source-menu:visible')).toHaveCount(0);
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  await expect(row.locator('[data-source-module=personal]')).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(row.locator('[data-source-module=education]')).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(row.locator('[data-source-field="education[].school"][data-source-index="0"]')).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(row.locator('[data-source-clear]')).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(row.locator('[data-source-back]')).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(row.locator('[data-source-module=personal]')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(trigger).toBeFocused();
+  await expect(trigger).toHaveAttribute('data-value', 'personal.fullName::0');
+  await expect(row.getByRole('checkbox')).toBeChecked();
+  await trigger.click();
+  await row.locator('[data-source-module=education]').click();
+  await other.locator('.source-trigger').click();
+  await expect(row.locator('.source-menu')).toBeHidden();
+  await expect(page.locator('.source-menu:visible')).toHaveCount(1);
+  await expect(trigger).toHaveAttribute('data-value', 'personal.fullName::0');
+  await page.getByRole('heading', { name: '折桂填写助手', exact: true }).click();
+  await expect(page.locator('.source-menu:visible')).toHaveCount(0);
+  await trigger.click();
+  await page.keyboard.press('Shift+Tab');
+  await expect(row.locator('.source-menu')).toBeHidden();
+  await expect(row.getByRole('checkbox')).toBeChecked();
+  await chooseSource(row, 'education', 'education[].school::1');
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(trigger).toBeFocused();
+  await expect(trigger).toContainText('教育经历 2（杭州电子科技大学） · 学校');
+  await expect(row.locator('.value-preview')).toContainText('杭州电子科技大学');
+  await trigger.click();
+  await row.locator('[data-source-clear]').click();
+  await expect(trigger).toHaveAttribute('data-value', '');
+  await expect(row.getByRole('checkbox')).not.toBeChecked();
+  await expect(row.locator('.value-preview')).toContainText('请先选择档案字段');
+  expect(calls).toBe(0);
+});
+
+test('REQ-20261010-04 级联支持自定义板块、删除与类型边界、长列表及窄屏', async ({ page }) => {
+  await page.goto('/');
+  let fixture = removeProfileField(sampleProfile(), 'personal', 0, 'email');
+  fixture = addProfileSection(fixture, '补充联系信息');
+  const sectionId = fixture.sections[0].id;
+  fixture = addProfileField(fixture, sectionId, 0, '备用邮箱', 'virtual@example.test', 'email');
+  fixture = addProfileField(fixture, sectionId, 0, '内部备注', '虚构');
+  for (let n = 0; n < 28; n++) fixture = addProfileField(fixture, sectionId, 0, `备用联系 ${n}`, `virtual${n}@example.test`, 'email');
+  const fieldPath = `sections.${sectionId}[].${fixture.sections[0].records[0].fields[0].id}`;
+  await page.evaluate(profile => localStorage.setItem('zheg:profile', JSON.stringify(profile)), fixture);
+  await page.reload();
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.getByRole('button', { name: '识别表单', exact: true }).click();
+  const email = page.locator('.preview-row').filter({ has: page.getByRole('checkbox', { name: '填写 电子邮箱 *', exact: true }) });
+  await email.locator('.source-trigger').click();
+  await expect(email.locator('[data-source-module=personal]')).toHaveCount(0);
+  await email.locator(`[data-source-module="${sectionId}"]`).click();
+  await expect(email.locator('[data-source-field="personal.email"]')).toHaveCount(0);
+  expect(await email.locator('[data-source-field]').allTextContents()).not.toContain('内部备注');
+  expect(await email.locator('.source-options').evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  // A stale/invalid record index cannot be committed even if the DOM is altered.
+  const field = email.locator(`[data-source-field="${fieldPath}"]`);
+  await field.evaluate(el => { el.dataset.sourceIndex = '99'; });
+  await field.click();
+  await expect(email.locator('.source-trigger')).toHaveAttribute('aria-expanded', 'true');
+  await field.evaluate(el => { el.dataset.sourceIndex = '0'; });
+  await field.click();
+  await expect(email.locator('.source-trigger')).toContainText('补充联系信息 1');
+  await expect(email.locator('.value-preview')).toContainText('virtual@example.test');
+  await page.getByRole('button', { name: '确认填写', exact: true }).click();
+  await expect(page.locator('input[name=email]')).toHaveValue('virtual@example.test');
 });

@@ -153,9 +153,13 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     await panel.getByRole('button', { name: '识别表单', exact: true }).click();
     await expect(panel.locator('.preview-stats strong').first()).toHaveText('22');
     const schoolSource = panel.locator('.preview-row').filter({ hasText: '所在高校 *' }).first();
-    await expect(schoolSource.locator('.section-select')).toHaveValue('education');
-    await expect(schoolSource.locator('.field-select')).toHaveValue('education[].school::0');
-    expect(await schoolSource.locator('.field-select option').allTextContents()).not.toContain('姓名');
+    await expect(schoolSource.locator('.source-trigger')).toContainText('教育经历');
+    await expect(schoolSource.locator('.source-trigger')).toHaveAttribute('data-value', 'education[].school::0');
+    await schoolSource.locator('.source-trigger').click();
+    await schoolSource.locator('[data-source-module=education]').click();
+    expect(await schoolSource.locator('[data-source-field]').allTextContents()).not.toContain('姓名');
+    await schoolSource.locator('[data-source-field="education[].school"][data-source-index="0"]').click();
+    await expect(schoolSource.locator('.source-trigger')).toHaveAttribute('aria-expanded', 'false');
     await panel.getByRole('button', { name: '确认填写', exact: true }).click();
     await expect(form.locator('#application-form input[name=applicantName]')).toHaveValue('林知夏');
     await expect(form.locator('#application-form input[name=school2]')).toHaveValue('杭州电子科技大学');
@@ -201,7 +205,11 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     await expect(form.locator('input[name=preferredName]')).toHaveValue('林知夏');
     await expect(panel.getByRole('status')).toContainText('填写完成');
     const memory = await worker.evaluate(async () => (await chrome.storage.local.get('recognitionMemory')).recognitionMemory);
-    expect(memory.entries).toHaveLength(1);
+    // The new real picker interaction also confirms the school mapping.
+    expect(memory.entries).toEqual([
+      { origin: 'http://127.0.0.1:5188', section: 'education', label: '所在高校', type: 'text', options: [], path: 'education[].school' },
+      { origin: 'http://127.0.0.1:5188', section: 'named/其他信息', label: '你的称呼', type: 'text', options: [], path: 'personal.fullName' },
+    ]);
     expect(JSON.stringify(memory)).not.toContain('林知夏');
     await panel.reload();
     await panel.getByRole('button', { name: '本地档案', exact: true }).click();

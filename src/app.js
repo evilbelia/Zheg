@@ -1,5 +1,6 @@
 import './style.css';
-import { emptyProfile, sampleProfile, validateProfile, profileSchema, profileSections, profileSection, fieldsForRecord, readValue, compatibleDefinition, addProfileField, removeProfileField, addProfileSection, removeProfileSection, addProfileRecord, removeProfileRecord } from './profile.js';
+import { sourcePicker, setupSourcePickers } from './source-picker.js';
+import { emptyProfile, sampleProfile, validateProfile, profileSchema, profileSections, profileSection, fieldsForRecord, readValue, addProfileField, removeProfileField, addProfileSection, removeProfileSection, addProfileRecord, removeProfileRecord } from './profile.js';
 import { matchFields, fillValue, groupForSection, needsModelReview, mappingIndex } from './matching.js';
 import { inferMappings, modelPayload, testConnection } from './model.js';
 import { normalizeConfig, validateConfig, configurationReady, permissionOrigin, DEEPSEEK_MODELS, DEEPSEEK_URL } from './model-config.js';
@@ -58,21 +59,6 @@ function render() {
   else if (activeTab === 'profile') renderProfile();
   else renderSettings();
 }
-function sourceControls(row) {
-  const schema = profileSchema(profile).filter(s => compatibleDefinition(row, s) && s.indices.length);
-  const sections = profileSections(profile).filter(s => schema.some(def => def.sectionId === s.id));
-  const mapped = profileSchema(profile).find(s => s.path === row.path);
-  const sectionId = row.sourceSection ?? mapped?.sectionId ?? groupForSection(row.section, profile) ?? '';
-  const section = sections.find(s => s.id === sectionId);
-  const valid = schema.some(s => s.path === row.path && s.indices.includes(row.index));
-  const placeholder = row.path && !valid ? '无对应档案记录，请重新选择' : '请选择档案字段';
-  const options = section?.records.map((record, index) => {
-    const fields = schema.filter(s => s.sectionId === sectionId && s.indices.includes(index));
-    const html = fields.map(s => `<option value="${esc(s.path)}::${index}" ${row.path === s.path && row.index === index ? 'selected' : ''}>${esc(s.label.split(' · ').at(-1))}</option>`).join('');
-    return sectionId === 'personal' ? html : `<optgroup label="${esc(`${index + 1} · ${record.school || record.company || record.fields?.find(f => /姓名|名称|关系/.test(f.label))?.value || '未命名记录'}`)}">${html}</optgroup>`;
-  }).join('') ?? '';
-  return `<div class="source-controls"><label>来源板块<select class="mapping-select section-select" data-source-section="${row.id}" aria-label="${esc(row.label)}来源板块" ${busy ? 'disabled' : ''}><option value="" ${!section ? 'selected' : ''}>请选择板块</option>${sections.map(s => `<option value="${esc(s.id)}" ${s.id === sectionId ? 'selected' : ''}>${esc(s.title)}</option>`).join('')}</select></label><label>记录与字段<select class="mapping-select field-select" data-map="${row.id}" aria-label="${esc(row.label)}档案来源" ${busy || !section ? 'disabled' : ''}><option value="" ${!valid ? 'selected' : ''}>${placeholder}</option>${options}</select></label></div>`;
-}
 function renderPreview() {
   const matched = rows.filter(r => r.path).length;
   const unresolved = rows.length - matched;
@@ -81,7 +67,7 @@ function renderPreview() {
   document.querySelector('#panel-content').innerHTML = `<div class="scan-toolbar"><div><strong>${scanned ? '当前页面' : '开始一次轻松的填写'}</strong><p>${esc(scanned ? pageTitle : '先识别表单，再检查待填内容')}</p></div><button class="button primary" id="scan" ${busy ? 'disabled' : ''}>${icon('scan', 17)} ${busy ? '处理中…' : scanned ? '重新识别' : '识别表单'}</button></div>
     ${!scanned ? `<div class="empty-state"><div class="empty-illustration"><div class="paper"><span></span><span></span><span></span><span></span></div><div class="illustration-check">${icon('check', 22)}</div></div><h3>重复的信息，交给折桂</h3><p>从本地档案找到对应内容，<br>每一项都由你检查后再填入。</p><div class="steps"><span><b>1</b> 识别字段</span><i>—</i><span><b>2</b> 检查预览</span><i>—</i><span><b>3</b> 确认填写</span></div></div><div class="tip-card">${icon('file', 20)}<div><strong>${isExtension ? '先准备一份个人档案' : '一份演示档案已经准备好'}</strong><p>${isExtension ? '在“本地档案”中录入信息，或粘贴文本让模型整理。' : '林知夏的两段教育经历和一段实习，可直接体验。'}</p><button class="text-button" data-go-profile>查看本地档案 ${icon('arrow', 14)}</button></div></div>` : `
     <div class="preview-stats"><div><strong>${rows.length}</strong><span>网页字段</span></div><div><strong class="green">${matched}</strong><span>已匹配</span></div><div><strong class="amber">${unresolved}</strong><span>待确认</span></div></div>
-    <div class="preview-hint">使用已保存档案，请先选来源板块，再选记录与字段。取消勾选可跳过；网页已有内容默认保留。</div>
+    <div class="preview-hint">使用已保存档案，点击来源选择框，先选板块，再选信息。取消勾选可跳过；网页已有内容默认保留。</div>
     <div class="preview-list">${groups.map(groupId => {
       const groupRows = rows.filter(r => r.groupId === groupId);
       const kind = groupForSection(groupRows[0].section, profile);
@@ -91,7 +77,7 @@ function renderPreview() {
         const value = readValue(profile, row.path, row.index);
         const missingRecord = row.path && !profileSchema(profile).find(s => s.path === row.path)?.indices.includes(row.index);
         const conversion = fillValue(row, value);
-        return `<article class="preview-row ${row.path ? '' : 'unresolved'}" data-row="${row.id}"><div class="row-title"><label class="row-checkbox"><input type="checkbox" ${busy ? 'disabled' : ''} data-select="${row.id}" ${row.selected ? 'checked' : ''} aria-label="填写 ${esc(row.label)}"><strong>${esc(row.label)}</strong></label><span class="source-badge ${row.path ? '' : 'pending'}">${esc(row.source)}${row.path && needsModelReview(row, profile) ? ' · 无可填值' : ''}</span></div>${sourceControls(row)}<div class="value-preview"><span>待填值</span><div>${esc(value || (missingRecord ? '无对应档案记录，请选择记录' : row.path ? '已保存档案中此字段为空，请补充并保存' : '请先选择档案字段'))}</div></div>${!conversion.ok && row.path ? `<p class="field-warning">${esc(conversion.reason)}</p>` : conversion.note ? `<p class="field-warning">${esc(conversion.note)}</p>` : ''}${row.hasValue ? `<label class="overwrite"><input type="checkbox" ${busy ? 'disabled' : ''} data-overwrite="${row.id}" ${row.override ? 'checked' : ''}> 覆盖网页已有内容</label>` : ''}${row.status ? `<div class="fill-status ${row.result === 'success' ? 'success' : ''}">${esc(row.status)}</div>` : ''}</article>`;
+        return `<article class="preview-row ${row.path ? '' : 'unresolved'}" data-row="${row.id}"><div class="row-title"><label class="row-checkbox"><input type="checkbox" ${busy ? 'disabled' : ''} data-select="${row.id}" ${row.selected ? 'checked' : ''} aria-label="填写 ${esc(row.label)}"><strong>${esc(row.label)}</strong></label><span class="source-badge ${row.path ? '' : 'pending'}">${esc(row.source)}${row.path && needsModelReview(row, profile) ? ' · 无可填值' : ''}</span></div>${sourcePicker(row, profile, busy)}<div class="value-preview"><span>待填值</span><div>${esc(value || (missingRecord ? '无对应档案记录，请选择记录' : row.path ? '已保存档案中此字段为空，请补充并保存' : '请先选择档案字段'))}</div></div>${!conversion.ok && row.path ? `<p class="field-warning">${esc(conversion.reason)}</p>` : conversion.note ? `<p class="field-warning">${esc(conversion.note)}</p>` : ''}${row.hasValue ? `<label class="overwrite"><input type="checkbox" ${busy ? 'disabled' : ''} data-overwrite="${row.id}" ${row.override ? 'checked' : ''}> 覆盖网页已有内容</label>` : ''}${row.status ? `<div class="fill-status ${row.result === 'success' ? 'success' : ''}">${esc(row.status)}</div>` : ''}</article>`;
       }).join('')}</section>`;
     }).join('') || '<div class="no-fields">未找到可支持的表单字段。<br>请确认输入框可见且可编辑。</div>'}</div>
     <div class="fill-bar"><div><strong id="selected-count">已选择 ${selected} 项</strong><span>${esc(lastScan)}</span></div><button class="button primary" id="fill" ${busy || !selected ? 'disabled' : ''}>${icon('check', 17)} 确认填写</button></div>`}`;
@@ -342,12 +328,21 @@ document.querySelector('#app').addEventListener('change', event => {
     }
     renderPreview(); return;
   }
-  const row = rows.find(r => r.id === (el.dataset.map || el.dataset.select || el.dataset.overwrite || el.dataset.sourceSection));
+  const row = rows.find(r => r.id === (el.dataset.select || el.dataset.overwrite));
   if (!row) return;
-  if (el.dataset.sourceSection) { row.sourceSection = el.value; row.path = ''; row.selected = false; row.source = '需要确认'; row.status = ''; row.result = ''; renderPreview(); return; }
-  if (el.dataset.map) { const [path, index] = el.value.split('::'); row.path = path; row.index = Number(index || 0); row.source = path ? '手动选择' : '需要确认'; row.selected = Boolean(readValue(profile, row.path, row.index)); row.status = ''; renderPreview(); }
-  else if (el.dataset.select) { row.selected = el.checked; const count = rows.filter(r => r.selected).length; document.querySelector('#selected-count').textContent = `已选择 ${count} 项`; document.querySelector('#fill').disabled = !count || busy; }
+  if (el.dataset.select) { row.selected = el.checked; const count = rows.filter(r => r.selected).length; document.querySelector('#selected-count').textContent = `已选择 ${count} 项`; document.querySelector('#fill').disabled = !count || busy; }
   else row.override = el.checked;
+});
+setupSourcePickers(document.querySelector('#app'), {
+  getProfile: () => profile,
+  getRow: id => rows.find(row => row.id === id),
+  isBusy: () => busy,
+  onSelect: (id, path, index) => {
+    const row = rows.find(r => r.id === id);
+    row.path = path; row.index = index; row.source = path ? '手动选择' : '需要确认';
+    row.selected = Boolean(readValue(profile, path, index)); row.status = ''; row.result = '';
+    renderPreview();
+  },
 });
 render();
 if (keyLoadError) notice(keyLoadError, true);

@@ -47,7 +47,7 @@ npm run build
 
 升级后仍存活的旧扩展会话密钥自动迁移；已经丢失的密钥需要最后输入并保存一次。卸载扩展、清除网站数据、隐私窗口关闭或更换浏览器配置后需重新保存。正式扩展更新请保留同一扩展 ID 和浏览器配置；开发模式应在同一路径重新构建并点击扩展“重新加载”，避免删除再安装。回滚到旧代码前可先清除已保存密钥，旧版恢复会话 / 页面内存行为。
 
-填写预览中先选择“来源板块”，再从“记录与字段”选择，字段菜单只显示该板块的兼容字段，并按经历记录分组。已匹配项会自动定位来源；切换板块后重新选择字段。网页多段经历默认按顺序对应档案，无对应记录时明确提示，不会自动用首条代填；可在分组右侧手动指定记录。预览使用已保存档案，编辑后须保存并重新识别；空值提示与缺失记录提示分开，避免来源看似正确却取不到值。
+填写预览每条信息只显示一个档案来源选择框。点击后先选板块，再选信息，多段经历在字段列表内按记录分组；选中后收起并显示完整来源。浏览板块不改变原映射，按 Esc、点击外部或 Tab 离开可取消；支持方向键、Home / End、Enter / 空格及左右层级导航。只显示兼容且未删除的字段，自定义板块同样可选。网页多段经历默认按顺序对应档案，无对应记录时明确提示，不会自动用首条代填；分组右侧仍可手动指定记录。预览使用已保存档案，编辑后须保存并重新识别；空值与缺失记录分别提示。
 
 ## 粘贴载入与自定义档案
 
@@ -89,6 +89,6 @@ make verify
 
 可通过 `ZHEG_CHROME_PATH` 指定本机 Chromium 可执行文件。扩展集成测试需要 Playwright Chromium（品牌 Chrome 新版本限制命令行加载扩展）。测试覆盖规则上下文、重复经历、输入校验、已有值保护、模型 mock、异常降级和完整浏览器流程；不会调用真实模型服务。
 
-设计：[MVP 软件设计说明书](docs/MVP软件设计说明书.md)。需求与交付记录：[MVP](docs/changes/2026-10-09-mvp.md)、[自动智能识别 REQ-20261009-02](docs/changes/2026-10-09-auto-recognition.md)、[可扩展档案 REQ-20261009-03](docs/changes/2026-10-09-flexible-profile.md)、[固定字段标题 REQ-20261009-04](docs/changes/2026-10-09-fixed-field-titles.md)、[API Key 持久保存 REQ-20261009-05](docs/changes/2026-10-09-persistent-api-key.md)、[粘贴日期兼容 REQ-20261010-01](docs/changes/2026-10-10-profile-date-import.md)、[新词条优先 REQ-20261010-02](docs/changes/2026-10-10-profile-import-precedence.md)、[预览复核与板块选择 REQ-20261010-03](docs/changes/2026-10-10-mapping-preview.md)。
+设计：[MVP 软件设计说明书](docs/MVP软件设计说明书.md)。需求与交付记录：[MVP](docs/changes/2026-10-09-mvp.md)、[自动智能识别 REQ-20261009-02](docs/changes/2026-10-09-auto-recognition.md)、[可扩展档案 REQ-20261009-03](docs/changes/2026-10-09-flexible-profile.md)、[固定字段标题 REQ-20261009-04](docs/changes/2026-10-09-fixed-field-titles.md)、[API Key 持久保存 REQ-20261009-05](docs/changes/2026-10-09-persistent-api-key.md)、[粘贴日期兼容 REQ-20261010-01](docs/changes/2026-10-10-profile-date-import.md)、[新词条优先 REQ-20261010-02](docs/changes/2026-10-10-profile-import-precedence.md)、[预览复核与板块选择 REQ-20261010-03](docs/changes/2026-10-10-mapping-preview.md)、[级联来源选择 REQ-20261010-04](docs/changes/2026-10-10-cascading-source-picker.md)。
 
 业务后端、数据库和 Compose 不涉及。`make ci` 以本项目实际扩展栈执行质量门。
