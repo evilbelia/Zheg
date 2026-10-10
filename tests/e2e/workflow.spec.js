@@ -363,6 +363,58 @@ test('REQ-20261009-03 文本载入归类、草稿不自动保存、重复去重�
   await expect(page.getByRole('textbox', { name: '成员关系内容', exact: true })).toHaveValue('父亲');
 });
 
+test('REQ-20261010-01 混合日期不阻断个人信息载入，保存刷新恢复与失败保护', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => localStorage.setItem('zheg:profile', JSON.stringify({ schemaVersion: 1, personal: {}, education: [], internships: [] })));
+  await page.reload();
+  await configureCustom(page, { auto: false });
+  const text = '# 个人信息\n**姓名：**虚构用户\n# 教育经历\n学校：测试大学\n主修专业：计算机\n开始日期：2023年9月\n# 实习工作经历\n工作单位：测试公司\n开始时间：2025-07-28\n结束日期：至今\n项目时间：2025.06-2025.07';
+  const result = { sections: [
+    { title: '个人信息', records: [{ fields: [{ label: '姓名', value: '虚构用户', type: 'text' }, { label: '爱好', value: '阅读', type: 'text' }] }] },
+    { title: '教育经历', records: [{ fields: [{ label: '学校', value: '测试大学', type: 'text' }, { label: '主修专业', value: '计算机', type: 'text' }, { label: '开始日期', value: '2023年9月', type: 'text' }] }] },
+    { title: '实习工作经历', records: [{ fields: [{ label: '工作单位', value: '测试公司', type: 'text' }, { label: '开始时间', value: '2025-07-28', type: 'date' }, { label: '结束日期', value: '至今', type: 'date' }, { label: '项目时间', value: '2025.06-2025.07', type: 'date' }] }] },
+  ] };
+  let calls = 0;
+  await page.route('https://model.example/v1/chat/completions', route => {
+    calls++;
+    expect(JSON.parse(route.request().postDataJSON().messages[1].content).text).toBe(text);
+    return route.fulfill({ contentType: 'application/json', body: completion(JSON.stringify(result)) });
+  });
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  const original = await page.evaluate(() => localStorage.getItem('zheg:profile'));
+  await page.locator('#profile-text').fill(text);
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('个人信息已载入编辑区');
+  await expect(page.getByRole('status')).toContainText('日期按月保存');
+  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('虚构用户');
+  await expect(page.locator('input[name="education:0:major"]')).toHaveValue('计算机');
+  await expect(page.locator('input[name="education:0:startDate"]')).toHaveValue('2023-09');
+  await expect(page.locator('input[name="internships:0:company"]')).toHaveValue('测试公司');
+  await expect(page.locator('input[name="internships:0:startDate"]')).toHaveValue('2025-07');
+  await expect(page.locator('input[name="internships:0:endDate"]')).toHaveValue('');
+  await expect(page.getByRole('textbox', { name: '结束时间（原文）内容', exact: true })).toHaveValue('至今');
+  await expect(page.getByRole('textbox', { name: '项目时间内容', exact: true })).toHaveValue('2025.06-2025.07');
+  expect(await page.evaluate(() => localStorage.getItem('zheg:profile'))).toBe(original);
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('新增或补充 0 项');
+  expect(calls).toBe(2);
+  await page.getByRole('button', { name: '保存档案', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('档案已保存在本机');
+  const saved = await page.evaluate(() => localStorage.getItem('zheg:profile'));
+  await page.reload();
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await expect(page.locator('input[name="internships:0:startDate"]')).toHaveValue('2025-07');
+  await expect(page.getByRole('textbox', { name: '结束时间（原文）内容', exact: true })).toHaveValue('至今');
+  // A structurally broken response must still preserve unsaved edits and saved data.
+  await page.locator('input[name="personal:0:fullName"]').fill('未保存编辑');
+  await page.locator('#profile-text').fill(text);
+  await page.route('https://model.example/**', route => route.fulfill({ contentType: 'application/json', body: completion(JSON.stringify({ sections: [{ title: '基本信息', records: [{ fields: [{ label: '日期', value: '2025-07-28', type: 'script' }] }] }] })) }));
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('原编辑内容和已保存档案未改变');
+  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('未保存编辑');
+  expect(await page.evaluate(() => localStorage.getItem('zheg:profile'))).toBe(saved);
+});
+
 async function addInformation(record, label, value) {
   await record.locator('.information-adder summary').click();
   await record.locator('[data-new-label]').fill(label);

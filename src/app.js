@@ -157,7 +157,7 @@ async function loadProfileText() {
     const extracted = await extractProfile(profileText, config, apiKey, original);
     const merged = mergeExtraction(original, extracted);
     renderProfile(merged.profile);
-    notice(`个人信息已载入编辑区，新增或补充 ${merged.added} 项${merged.conflicts ? `，保留原值或删除状态 ${merged.conflicts} 项` : ''}。请核对后保存档案。`);
+    notice(`个人信息已载入编辑区，新增或补充 ${merged.added} 项${merged.conflicts ? `，保留原值或删除状态 ${merged.conflicts} 项` : ''}。日期按月保存，无法确定年月的内容保留为文本；已有非空内容不会覆盖。请核对后保存档案。`);
   } catch (error) { notice(`${failureMessage(error)} 原编辑内容和已保存档案未改变。`, true); }
   finally { busy = false; controls.forEach(el => { el.disabled = false; }); }
 }

@@ -5,15 +5,15 @@ export const SCHEMA = [
   { path: 'personal.gender', label: '基本信息 · 性别', type: 'text', aliases: ['性别', 'gender'] },
   { path: 'personal.city', label: '基本信息 · 现居城市', type: 'text', aliases: ['现居城市', '现居地', '当前城市'] },
   { path: 'education[].school', label: '教育经历 · 学校', type: 'text', aliases: ['毕业院校', '学校名称', '所在高校', '学校', '院校', 'school', 'university'] },
-  { path: 'education[].major', label: '教育经历 · 专业', type: 'text', aliases: ['专业', '专业名称', '所学专业', 'major'] },
+  { path: 'education[].major', label: '教育经历 · 专业', type: 'text', aliases: ['专业', '专业名称', '所学专业', '主修专业', 'major'] },
   { path: 'education[].degree', label: '教育经历 · 学历', type: 'text', aliases: ['学历', '最高学历', '学位', 'degree'] },
   { path: 'education[].startDate', label: '教育经历 · 入学时间', type: 'date', aliases: ['入学时间', '开始时间', '开始日期', '起始时间', 'start date'] },
   { path: 'education[].endDate', label: '教育经历 · 毕业时间', type: 'date', aliases: ['毕业时间', '毕业日期', '结束时间', '结束日期', 'end date'] },
-  { path: 'internships[].company', label: '实习经历 · 公司', type: 'text', aliases: ['公司', '公司名称', '实习单位', '单位名称', 'company'] },
-  { path: 'internships[].position', label: '实习经历 · 职位', type: 'text', aliases: ['职位', '岗位', '实习岗位', '职位名称', 'position'] },
+  { path: 'internships[].company', label: '实习经历 · 公司', type: 'text', aliases: ['公司', '公司名称', '实习单位', '工作单位', '单位名称', 'company'] },
+  { path: 'internships[].position', label: '实习经历 · 职位', type: 'text', aliases: ['职位', '岗位', '实习岗位', '职位名称', '担任职务', 'position'] },
   { path: 'internships[].startDate', label: '实习经历 · 开始时间', type: 'date', aliases: ['开始时间', '开始日期', '起始时间', '入职时间', 'start date'] },
   { path: 'internships[].endDate', label: '实习经历 · 结束时间', type: 'date', aliases: ['结束时间', '结束日期', '离职时间', 'end date'] },
-  { path: 'internships[].description', label: '实习经历 · 工作内容', type: 'text', aliases: ['工作内容', '实习内容', '工作描述', '职责描述', 'description'] },
+  { path: 'internships[].description', label: '实习经历 · 工作内容', type: 'text', aliases: ['工作内容', '实习内容', '工作描述', '职责描述', '主要工作职责', 'description'] },
 ];
 
 export const emptyProfile = () => ({ schemaVersion: 2, personal: { fullName: '', phone: '', email: '', gender: '', city: '', extraFields: [], removedFields: [] }, education: [], internships: [], sections: [] });

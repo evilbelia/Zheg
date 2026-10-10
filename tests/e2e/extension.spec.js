@@ -120,6 +120,8 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     await expect(panel.getByRole('status')).toContainText('模型设置已保存');
     const fixture = sampleProfile();
     const extracted = { sections: profileSections(fixture).filter(s => s.records.length).map(s => ({ title: s.title, records: s.records.map((_, i) => ({ fields: fieldsForRecord(fixture, s.id, i).map(({ label, value, type }) => ({ label, value, type })) })) })) };
+    // Regression: a model can echo day precision despite the month-only prompt.
+    extracted.sections.find(s => s.title === '实习经历').records[0].fields.find(f => f.label === '开始时间').value = '2025-07-28';
     await context.route('http://127.0.0.1:5188/mock/chat/completions', async route => {
       const body = route.request().postDataJSON(), input = JSON.parse(body.messages[1].content);
       expect(input.text).toBe('虚构测试简历');
@@ -132,6 +134,7 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     await expect(panel.getByRole('status')).toContainText('个人信息已载入编辑区');
     expect(await worker.evaluate(async () => (await chrome.storage.local.get('profile')).profile)).toBeUndefined();
     await expect(panel.locator('input[name="personal:0:fullName"]')).toHaveValue('林知夏');
+    await expect(panel.locator('input[name="internships:0:startDate"]')).toHaveValue('2025-07');
     await panel.getByRole('button', { name: '智能识别', exact: true }).click();
     await panel.locator('input[name=autoInfer]').uncheck();
     await expect(panel.getByRole('status')).toContainText('已关闭');

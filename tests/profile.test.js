@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sampleProfile, emptyProfile, validateProfile, profileSchema, profileSection, fieldsForRecord, addProfileField, removeProfileField, addProfileSection, addProfileRecord, removeProfileRecord, removeProfileSection, readValue, compatible } from '../src/profile.js';
-import { extractProfile, validateExtraction, mergeExtraction } from '../src/profile-extraction.js';
+import { extractProfile, validateExtraction, mergeExtraction, extractionMonth } from '../src/profile-extraction.js';
 import { matchFields } from '../src/matching.js';
 import { modelPayload, inferMappings, validateMappings } from '../src/model.js';
 import { emptyMemory, learnMappings, applyMemory, validateMemory } from '../src/recognition-memory.js';
@@ -142,11 +142,90 @@ test('REQ-20261009-03 空文本与超长输入不请求；HTTP、非法 JSON、�
   assert.equal(calls, 0);
   await assert.rejects(extractProfile('text', config, '', sampleProfile(), async () => ({ ok: false, status: 401 })), /401/);
   await assert.rejects(extractProfile('text', config, '', sampleProfile(), async () => response('bad-json')), /JSON/);
-  const invalid = [null, {}, { sections: [] }, extracted('', [info('x', 'y')]), extracted('家庭信息', []), extracted('家庭信息', [info('x', 'y'), info('x', 'z')]), extracted('家庭信息', [info('x', 1)]), extracted('家庭信息', [info('x', 'y', 'script')]), extracted('家庭信息', [info('日期', '2020-99', 'date')])];
+  const invalid = [null, {}, { sections: [] }, extracted('', [info('x', 'y')]), extracted('家庭信息', []), extracted('家庭信息', [info('x', 'y'), info('x', 'z')]), extracted('家庭信息', [info('x', 1)]), extracted('家庭信息', [info('x', 'y', 'script')]), extracted('家庭信息', [info('日期', '', 'date')])];
   for (const value of invalid) assert.throws(() => validateExtraction(value));
   const clean = validateExtraction({ ...extracted('家庭信息', [info('<img src=x onerror=alert(1)>', '内容')]), html: '<script>', path: '__proto__.x' });
   assert.equal(clean.path, undefined);
   assert.equal(clean.sections[0].records[0].fields[0].label, '<img src=x onerror=alert(1)>');
+});
+
+test('REQ-20261010-01 完整日期与年月规范化，真实日历校验及不推断月份', () => {
+  for (const [source, month] of [
+    ['2025-07', '2025-07'], [' 2025-7-28 ', '2025-07'], ['2025.6', '2025-06'],
+    ['2025/06/30', '2025-06'], ['2025年6月', '2025-06'], ['2024年2月29日', '2024-02'],
+    ['2000-2-29', '2000-02'], ['2025年6月3号', '2025-06'],
+  ]) {
+    assert.equal(extractionMonth(source), month);
+    const result = validateExtraction(extracted('测试板块', [info('日期', source, 'date')]));
+    assert.deepEqual(result.sections[0].records[0].fields, [info('日期', month, 'date')]);
+    assert.deepEqual(validateExtraction(result), result);
+  }
+  for (const source of ['2020-99', '2025-00', '2025-13-01', '2025-02-29', '1900-02-29', '2025/04/31', '2025-07-00', '0000-01', '2025', '至今', '2025.06-2025.07', '06/07/2025', '2025-07-28T12:00:00Z', '2025-07/28', '2025-07-28 多余文字']) {
+    assert.equal(extractionMonth(source), '');
+    const result = validateExtraction(extracted('测试板块', [info('日期', source, 'date')]));
+    assert.deepEqual(result.sections[0].records[0].fields, [info('日期', source, 'text')]);
+  }
+});
+
+test('REQ-20261010-01 混合日期载入、标准别名、重复去重与原数据不变', () => {
+  const original = emptyProfile();
+  const output = { sections: [
+    { title: '个人信息', records: [{ fields: [info('姓名', '虚构用户'), info('爱好', '阅读')] }] },
+    { title: '教育经历', records: [{ fields: [info('学校', '测试大学'), info('主修专业', '计算机'), info('开始日期', '2023年9月', 'text')] }] },
+    { title: '实习工作经历', records: [{ fields: [info('工作单位', '测试公司'), info('担任职务', '开发实习生'), info('主要工作职责', '测试内容'), info('开始时间', '2025-7-28', 'date'), info('结束日期', '至今', 'date')] }] },
+    { title: '项目经历', records: [{ fields: [info('项目名称', '虚构项目'), info('项目时间', '2025.06-2025.07', 'date')] }] },
+  ] };
+  const snapshot = structuredClone(output);
+  const merged = mergeExtraction(original, output);
+  assert.equal(merged.profile.personal.fullName, '虚构用户');
+  assert.equal(merged.profile.education[0].startDate, '2023-09');
+  assert.equal(merged.profile.education[0].major, '计算机');
+  assert.equal(merged.profile.internships[0].company, '测试公司');
+  assert.equal(merged.profile.internships[0].position, '开发实习生');
+  assert.equal(merged.profile.internships[0].description, '测试内容');
+  assert.equal(merged.profile.internships[0].startDate, '2025-07');
+  assert.equal(merged.profile.internships[0].endDate, '');
+  assert.equal(merged.profile.internships[0].extraFields.find(f => f.label === '结束时间（原文）').value, '至今');
+  assert.equal(merged.profile.sections[0].records[0].fields.find(f => f.label === '项目时间').value, '2025.06-2025.07');
+  assert.deepEqual(validateProfile(merged.profile), merged.profile);
+  const repeated = mergeExtraction(merged.profile, output);
+  assert.equal(repeated.added, 0);
+  assert.deepEqual(repeated.profile, merged.profile);
+  assert.deepEqual(original, emptyProfile());
+  assert.deepEqual(output, snapshot);
+});
+
+test('REQ-20261010-01 日期原文不污染标准或自定义 month 字段，不恢复已删除日期', () => {
+  let base = addProfileField(sampleProfile(), 'internships', 0, '转正日期', '2025-10', 'date');
+  base = removeProfileField(base, 'internships', 0, 'endDate');
+  const output = extracted('实习经历', [info('公司', '示例科技有限公司'), info('开始时间', '2025-02-30', 'date'), info('结束日期', '至今', 'date'), info('转正日期', '待定', 'date')]);
+  const merged = mergeExtraction(base, output);
+  assert.equal(merged.profile.internships.length, 1);
+  assert.equal(merged.profile.internships[0].startDate, '2025-07');
+  assert.equal(merged.profile.internships[0].endDate, '');
+  const fields = fieldsForRecord(merged.profile, 'internships', 0);
+  assert.equal(fields.find(f => f.label === '开始时间（原文）').value, '2025-02-30');
+  assert.equal(fields.find(f => f.label === '转正日期').value, '2025-10');
+  assert.equal(fields.find(f => f.label === '转正日期（原文）').value, '待定');
+  assert.equal(fields.some(f => f.label.startsWith('结束')), false);
+  assert.equal(merged.conflicts, 1);
+  assert.equal(mergeExtraction(merged.profile, output).added, 0);
+  assert.deepEqual(validateProfile(merged.profile), merged.profile);
+});
+
+test('REQ-20261010-01 日期兼容不放宽结构、容量与重复字段拒绝', async () => {
+  for (const fields of [[info('日期', 123, 'date')], [info('日期', 'x'.repeat(5001), 'date')], [info('日期', '2025-7-28', 'date'), info('日期', '2025-7-29', 'date')]]) {
+    assert.throws(() => validateExtraction(extracted('项目经历', fields)));
+  }
+  const output = extracted('实习经历', [info('开始时间', '2025-7-28', 'date')]);
+  let calls = 0;
+  const result = await extractProfile('虚构实习\n开始时间：2025-7-28', config, '', emptyProfile(), async (_, options) => {
+    calls++;
+    assert.match(JSON.parse(options.body).messages[0].content, /不得从身份证、学号推断日期/);
+    return response(JSON.stringify(output));
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.sections[0].records[0].fields[0].value, '2025-07');
 });
 
 test('REQ-20261009-03 动态 schema 参与模型协议，拒绝不存在 / 已删除 / 类型不兼容路径', async () => {
