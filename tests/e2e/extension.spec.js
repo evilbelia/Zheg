@@ -135,6 +135,14 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     expect(await worker.evaluate(async () => (await chrome.storage.local.get('profile')).profile)).toBeUndefined();
     await expect(panel.locator('input[name="personal:0:fullName"]')).toHaveValue('林知夏');
     await expect(panel.locator('input[name="internships:0:startDate"]')).toHaveValue('2025-07');
+    // New extraction values update the draft while leaving persisted data untouched.
+    await panel.locator('input[name="personal:0:fullName"]').fill('旧的虚构姓名');
+    await panel.locator('input[name="internships:0:position"]').fill('旧的虚构职位');
+    await panel.getByRole('button', { name: '载入个人信息' }).click();
+    await expect(panel.getByRole('status')).toContainText('更新 2 项');
+    await expect(panel.locator('input[name="personal:0:fullName"]')).toHaveValue('林知夏');
+    await expect(panel.locator('input[name="internships:0:position"]')).toHaveValue('前端开发实习生');
+    expect(await worker.evaluate(async () => (await chrome.storage.local.get('profile')).profile)).toBeUndefined();
     await panel.getByRole('button', { name: '智能识别', exact: true }).click();
     await panel.locator('input[name=autoInfer]').uncheck();
     await expect(panel.getByRole('status')).toContainText('已关闭');

@@ -306,7 +306,7 @@ test('窄屏无水平溢出，页面不执行脚本标签', async ({ page }) => 
   await expect(page.locator('.preview-list img')).toHaveCount(0);
 });
 
-test('REQ-20261009-03 文本载入归类、草稿不自动保存、重复去重与失败保护', async ({ page }) => {
+test('REQ-20261010-02 文本载入覆盖示例姓名、草稿不自动保存、重复去重与失败保护', async ({ page }) => {
   await page.goto('/');
   await configureCustom(page, { auto: false });
   const text = '姓名：另一姓名\n实习：示例科技有限公司，是否有实习证明：是\n家庭：父亲，教师';
@@ -332,8 +332,8 @@ test('REQ-20261009-03 文本载入归类、草稿不自动保存、重复去重�
   await page.locator('#profile-text').fill(text);
   await page.getByRole('button', { name: '载入个人信息' }).click();
   await expect(page.getByRole('status')).toContainText('个人信息已载入编辑区');
-  await expect(page.getByRole('status')).toContainText('保留原值或删除状态 1 项');
-  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('林知夏');
+  await expect(page.getByRole('status')).toContainText('更新 1 项');
+  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('另一姓名');
   await expect(page.getByRole('textbox', { name: '是否有实习证明内容', exact: true })).toHaveValue('是');
   await expect(page.getByRole('textbox', { name: '成员关系内容', exact: true })).toHaveValue('父亲');
   await expect(page.locator('[data-profile-input=label]')).toHaveCount(0);
@@ -341,6 +341,7 @@ test('REQ-20261009-03 文本载入归类、草稿不自动保存、重复去重�
   expect(await page.evaluate(() => localStorage.getItem('zheg:profile'))).toBeNull();
   await page.getByRole('button', { name: '载入个人信息' }).click();
   await expect(page.getByRole('status')).toContainText('新增或补充 0 项');
+  await expect(page.getByRole('status')).toContainText('更新 0 项');
   expect(await page.locator('[data-profile-section=internships] .profile-record').count()).toBe(1);
   expect(await page.locator('[data-profile-section]').filter({ has: page.getByRole('heading', { name: '家庭信息', exact: true }) }).locator('.profile-record').count()).toBe(1);
   await page.getByRole('button', { name: '保存档案', exact: true }).click();
@@ -361,6 +362,63 @@ test('REQ-20261009-03 文本载入归类、草稿不自动保存、重复去重�
   await page.getByRole('button', { name: '本地档案', exact: true }).click();
   await expect(page.locator('#profile-text')).toHaveValue('');
   await expect(page.getByRole('textbox', { name: '成员关系内容', exact: true })).toHaveValue('父亲');
+});
+
+test('REQ-20261010-02 新经历优先、同义词条更新、保存刷新并填写新值', async ({ page }) => {
+  await page.goto('/');
+  await configureCustom(page, { auto: false });
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await page.getByRole('button', { name: '保存档案', exact: true }).click();
+  const original = await page.evaluate(() => localStorage.getItem('zheg:profile'));
+  let updated = false;
+  await page.route('https://model.example/**', route => {
+    const body = route.request().postDataJSON();
+    expect(JSON.stringify(body)).not.toContain('林知夏');
+    expect(body.messages[0].content).toContain('语义相同的板块标题和小标题');
+    return route.fulfill({ contentType: 'application/json', body: completion(JSON.stringify({ sections: [
+      { title: '基本信息', records: [{ fields: [{ label: '姓名', value: updated ? '更新姓名' : '载入姓名', type: 'text' }, { label: '电话号码', value: '13900000000', type: 'tel' }, { label: '技术资格', value: updated ? '新资格' : '初次资格', type: 'text' }] }] },
+      { title: '教育经历', records: [{ fields: [{ label: '学校', value: '测试大学', type: 'text' }, { label: '专业', value: '测试专业', type: 'text' }, { label: '入学时间', value: '2023-09', type: 'date' }] }] },
+      { title: '实习经历', records: [{ fields: [{ label: '公司', value: '载入公司', type: 'text' }, { label: '开始时间', value: '2025-07', type: 'date' }, { label: '职位', value: updated ? '更新职位' : '载入职位', type: 'text' }, { label: '工作内容', value: updated ? '新的描述' : '初次描述', type: 'text' }] }] },
+    ] })) });
+  });
+  await page.locator('#profile-text').fill('虚构姓名、学校、公司和技术资格');
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('更新 2 项');
+  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('载入姓名');
+  await expect(page.locator('input[name="education:0:school"]')).toHaveValue('测试大学');
+  await expect(page.locator('input[name="internships:0:company"]')).toHaveValue('载入公司');
+  await expect(page.locator('input[name="internships:1:company"]')).toHaveValue('示例科技有限公司');
+  expect(await page.evaluate(() => localStorage.getItem('zheg:profile'))).toBe(original);
+  await expect(page.locator('#application-form input[name=applicantName]')).toHaveValue('');
+  updated = true;
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('新增或补充 0 项，更新 4 项');
+  await expect(page.getByRole('textbox', { name: '技术资格内容', exact: true })).toHaveValue('新资格');
+  await expect(page.locator('input[name="internships:0:position"]')).toHaveValue('更新职位');
+  await expect(page.locator('textarea[name="internships:0:description"]')).toHaveValue('新的描述');
+  await expect(page.locator('[data-profile-section=internships] .profile-record')).toHaveCount(2);
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('新增或补充 0 项，更新 0 项');
+  await page.getByRole('button', { name: '保存档案', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('档案已保存在本机');
+  await page.reload();
+  await page.getByRole('button', { name: '本地档案', exact: true }).click();
+  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('更新姓名');
+  await expect(page.getByRole('textbox', { name: '技术资格内容', exact: true })).toHaveValue('新资格');
+  await expect(page.locator('input[name="internships:0:position"]')).toHaveValue('更新职位');
+  const saved = await page.evaluate(() => localStorage.getItem('zheg:profile'));
+  await page.locator('#profile-text').fill('同义词条冲突的虚构信息');
+  await page.route('https://model.example/**', route => route.fulfill({ contentType: 'application/json', body: completion(JSON.stringify({ sections: [{ title: '基本信息', records: [{ fields: [{ label: '手机号', value: '13900000000', type: 'tel' }, { label: '电话号码', value: '13700000000', type: 'tel' }] }] }] })) }));
+  await page.getByRole('button', { name: '载入个人信息' }).click();
+  await expect(page.getByRole('status')).toContainText('同义词条内容冲突');
+  await expect(page.locator('input[name="personal:0:fullName"]')).toHaveValue('更新姓名');
+  expect(await page.evaluate(() => localStorage.getItem('zheg:profile'))).toBe(saved);
+  await page.getByRole('button', { name: '填写预览', exact: true }).click();
+  await page.getByRole('button', { name: '识别表单', exact: true }).click();
+  await page.getByRole('button', { name: '确认填写', exact: true }).click();
+  await expect(page.locator('#application-form input[name=applicantName]')).toHaveValue('更新姓名');
+  await expect(page.locator('#application-form input[name=school1]')).toHaveValue('测试大学');
+  await expect(page.locator('#application-form input[name=company]')).toHaveValue('载入公司');
 });
 
 test('REQ-20261010-01 混合日期不阻断个人信息载入，保存刷新恢复与失败保护', async ({ page }) => {

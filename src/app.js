@@ -98,7 +98,7 @@ function renderProfile(draft = profileDraft) {
   profileDraft = draft;
   document.querySelector('#panel-content').innerHTML = `<div class="panel-intro"><h3>一份档案，多次使用</h3><p>添加或删除信息后，请检查并保存。档案保存在本机浏览器。</p></div>
     <section class="text-profile-loader"><label for="profile-text">粘贴个人信息</label><textarea id="profile-text" rows="6" maxlength="20000" placeholder="粘贴简历、经历描述、表格或列表文本，模型会自动整理到各板块。">${esc(profileText)}</textarea>
-    <p class="small-note">点击载入会将上方原文及当前板块 / 小标题发送给已配置的模型服务商，不发送现有档案值。最多 20000 字；结果先进入编辑区，不覆盖已保存档案，请核对后保存。</p>
+    <p class="small-note">点击载入会将上方原文及当前板块 / 小标题发送给已配置的模型服务商，不发送现有档案值。最多 20000 字；同一词条以本次新值更新，未提供的信息保留，本次载入的经历排在前面。结果先进入编辑区，核对并保存后才替换本机档案。</p>
     <button class="button primary" type="button" id="load-profile">${icon('spark', 16)} 载入个人信息</button></section>
     <form id="profile-form">${profileSections(draft).map(section => `<section class="profile-section" data-profile-section="${section.id}"><div class="group-heading"><h3>${esc(section.title)}</h3><div class="section-buttons">${section.id !== 'personal' ? `<button type="button" class="text-button" data-add-record="${section.id}" aria-label="添加${esc(section.title)}记录">＋ 添加记录</button>` : ''}${section.custom ? `<button type="button" class="text-button danger" data-remove-section="${section.id}" aria-label="删除${esc(section.title)}板块">删除板块</button>` : ''}</div></div>
       ${section.records.map((record, index) => `<div class="profile-record" data-record="${section.id}:${index}">${section.id !== 'personal' ? `<div class="record-title"><span>第 ${index + 1} 段</span><button type="button" class="text-button danger" data-remove-record="${section.id}:${index}" aria-label="删除${esc(section.title)}第 ${index + 1} 段">删除记录</button></div>` : ''}
@@ -157,7 +157,7 @@ async function loadProfileText() {
     const extracted = await extractProfile(profileText, config, apiKey, original);
     const merged = mergeExtraction(original, extracted);
     renderProfile(merged.profile);
-    notice(`个人信息已载入编辑区，新增或补充 ${merged.added} 项${merged.conflicts ? `，保留原值或删除状态 ${merged.conflicts} 项` : ''}。日期按月保存，无法确定年月的内容保留为文本；已有非空内容不会覆盖。请核对后保存档案。`);
+    notice(`个人信息已载入编辑区，新增或补充 ${merged.added} 项，更新 ${merged.updated} 项${merged.skippedDeleted ? `，跳过已删除字段 ${merged.skippedDeleted} 项` : ''}。同一词条采用本次新值，未提供的信息保留。日期按月保存，无法确定年月的内容保留为文本。请核对后保存档案。`);
   } catch (error) { notice(`${failureMessage(error)} 原编辑内容和已保存档案未改变。`, true); }
   finally { busy = false; controls.forEach(el => { el.disabled = false; }); }
 }

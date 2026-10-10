@@ -91,7 +91,7 @@ test('REQ-20261009-03 标题、类型、ID、日期与容量边界拒绝', () =>
   assert.throws(() => validateProfile({ ...base, sections: Array(21).fill({}) }), /20/);
 });
 
-test('REQ-20261009-03 模型归类、重复载入去重、已有值与删除状态保留、原对象不变', () => {
+test('REQ-20261010-02 模型归类、新值覆盖、重复载入去重、删除状态及原对象不变', () => {
   let profile = removeProfileField(sampleProfile(), 'personal', 0, 'city');
   const original = structuredClone(profile);
   const result = mergeExtraction(profile, { sections: [
@@ -99,8 +99,9 @@ test('REQ-20261009-03 模型归类、重复载入去重、已有值与删除状�
     { title: '实习经历', records: [{ fields: [info('公司', '示例科技有限公司'), info('是否有实习证明', '是')] }] },
     { title: '家庭信息', records: [{ fields: [info('成员关系', '父亲'), info('职业', '教师')] }, { fields: [info('成员关系', '母亲'), info('职业', '医生')] }] },
   ] });
-  assert.equal(result.conflicts, 2);
-  assert.equal(result.profile.personal.fullName, '林知夏');
+  assert.equal(result.updated, 1);
+  assert.equal(result.skippedDeleted, 1);
+  assert.equal(result.profile.personal.fullName, '新姓名');
   assert.equal(result.profile.personal.city, '');
   assert.equal(result.profile.internships.length, 1);
   assert.equal(result.profile.internships[0].extraFields[0].value, '是');
@@ -111,7 +112,8 @@ test('REQ-20261009-03 模型归类、重复载入去重、已有值与删除状�
   assert.equal(repeated.profile.sections[0].records.length, 2);
   const separated = mergeExtraction(result.profile, extracted('实习经历', [info('公司', '另一家公司'), info('职位', '开发')]));
   assert.equal(separated.profile.internships.length, 2);
-  assert.equal(separated.profile.internships[0].company, '示例科技有限公司');
+  assert.equal(separated.profile.internships[0].company, '另一家公司');
+  assert.equal(separated.profile.internships[1].company, '示例科技有限公司');
   const differentPeriod = mergeExtraction(result.profile, extracted('实习经历', [info('公司', '示例科技有限公司'), info('开始时间', '2026-01', 'date')]));
   assert.equal(differentPeriod.profile.internships.length, 2);
   const ambiguous = mergeExtraction(result.profile, extracted('实习经历', [info('实习岗位', '前端开发实习生')]));
@@ -133,6 +135,96 @@ test('REQ-20261009-03 模型提取仅发送主动粘贴文本与标题，不发�
     return response(JSON.stringify(output));
   });
   assert.deepEqual(result, output);
+});
+
+test('REQ-20261010-02 同词条覆盖标准别名和自定义字段，不改变 ID 或缺失字段', () => {
+  const base = addProfileField(sampleProfile(), 'personal', 0, '技术资格', '旧资格');
+  const original = structuredClone(base), fieldID = base.personal.extraFields[0].id;
+  const incoming = extracted('个人信息', [info('姓名', '更新用户'), info('电话号码', '13900000000', 'tel'), info('电子邮箱', 'updated@example.com', 'email'), info('备用邮箱', 'backup@example.com', 'email'), info('技术资格', '新资格')]);
+  const result = mergeExtraction(base, incoming);
+  assert.equal(result.updated, 4);
+  assert.equal(result.added, 1);
+  assert.equal(result.profile.personal.fullName, '更新用户');
+  assert.equal(result.profile.personal.phone, '13900000000');
+  assert.equal(result.profile.personal.email, 'updated@example.com');
+  assert.equal(result.profile.personal.gender, base.personal.gender);
+  assert.equal(result.profile.personal.city, base.personal.city);
+  assert.equal(result.profile.personal.extraFields.find(f => f.label === '技术资格').id, fieldID);
+  assert.equal(result.profile.personal.extraFields.find(f => f.label === '技术资格').value, '新资格');
+  assert.equal(result.profile.personal.extraFields.find(f => f.label === '备用邮箱').value, 'backup@example.com');
+  const again = mergeExtraction(result.profile, incoming);
+  assert.equal(again.added, 0);
+  assert.equal(again.updated, 0);
+  assert.deepEqual(again.profile, result.profile);
+  assert.deepEqual(base, original);
+});
+
+test('REQ-20261010-02 经历身份匹配更新、不同周期分开、本次记录优先且原记录保留', () => {
+  const base = sampleProfile();
+  const updated = mergeExtraction(base, extracted('实习经历', [info('公司', '示例科技有限公司'), info('职位', '后端开发'), info('结束日期', '2025-11', 'date'), info('工作内容', '新的工作描述')]));
+  assert.equal(updated.profile.internships.length, 1);
+  assert.equal(updated.updated, 3);
+  assert.equal(updated.profile.internships[0].position, '后端开发');
+  assert.equal(updated.profile.internships[0].endDate, '2025-11');
+  assert.equal(updated.profile.internships[0].startDate, base.internships[0].startDate);
+  const second = mergeExtraction(updated.profile, extracted('实习经历', [info('公司', '示例科技有限公司'), info('开始时间', '2026-01', 'date'), info('职位', '另一段经历')]));
+  assert.equal(second.profile.internships.length, 2);
+  assert.equal(second.profile.internships[0].startDate, '2026-01');
+  assert.equal(second.profile.internships[1].position, '后端开发');
+  const ambiguous = mergeExtraction(second.profile, extracted('实习经历', [info('公司', '示例科技有限公司'), info('职位', '无法确定周期')]));
+  assert.equal(ambiguous.profile.internships.length, 3);
+  assert.deepEqual(ambiguous.profile.internships.slice(1), second.profile.internships);
+  const education = mergeExtraction(base, extracted('教育经历', [info('学校', '杭州电子科技大学'), info('专业', '新专业')]));
+  assert.equal(education.profile.education.length, 2);
+  assert.equal(education.profile.education[0].school, '杭州电子科技大学');
+  assert.equal(education.profile.education[0].major, '新专业');
+  assert.equal(education.profile.education[1].school, '浙江大学');
+  const anotherDegree = mergeExtraction(education.profile, extracted('教育经历', [info('学校', '杭州电子科技大学'), info('学历', '硕士')]));
+  assert.equal(anotherDegree.profile.education.length, 3);
+  assert.deepEqual(base, sampleProfile());
+});
+
+test('REQ-20261010-02 自定义记录按身份更新，家庭成员与同名字段不跨记录覆盖', () => {
+  const base = mergeExtraction(emptyProfile(), { sections: [{ title: '家庭信息', records: [
+    { fields: [info('姓名', '成员甲'), info('关系', '父亲'), info('职业', '教师')] },
+    { fields: [info('姓名', '成员乙'), info('关系', '母亲'), info('职业', '医生')] },
+  ] }] }).profile;
+  const updated = mergeExtraction(base, extracted('家庭信息', [info('姓名', '成员乙'), info('职业', '工程师')]));
+  assert.equal(updated.profile.sections[0].records.length, 2);
+  assert.equal(updated.updated, 1);
+  assert.equal(updated.profile.sections[0].records[0].fields.find(f => f.label === '职业').value, '工程师');
+  assert.equal(updated.profile.sections[0].records[1].fields.find(f => f.label === '职业').value, '教师');
+  const relation = mergeExtraction(updated.profile, extracted('家庭信息', [info('关系', '父亲'), info('职业', '退休')]));
+  assert.equal(relation.profile.sections[0].records.length, 2);
+  assert.equal(relation.updated, 1);
+  const differentName = mergeExtraction(relation.profile, extracted('家庭信息', [info('姓名', '成员丙'), info('关系', '父亲'), info('职业', '技术员')]));
+  assert.equal(differentName.profile.sections[0].records.length, 3);
+  assert.equal(differentName.updated, 0);
+  const missingIdentity = mergeExtraction(base, extracted('家庭信息', [info('职业', '管理员')]));
+  assert.equal(missingIdentity.profile.sections[0].records.length, 3);
+  assert.equal(missingIdentity.updated, 0);
+});
+
+test('REQ-20261010-02 同义冲突与多人基本信息拒绝，原数据不变且不额外请求模型', async () => {
+  const base = sampleProfile(), original = structuredClone(base);
+  const duplicates = extracted('基本信息', [info('手机号', '13900000000', 'tel'), info('电话号码', '13900000000', 'tel')]);
+  const result = mergeExtraction(base, duplicates);
+  assert.equal(result.updated, 1);
+  assert.equal(result.profile.personal.extraFields.length, 0);
+  assert.throws(() => mergeExtraction(base, extracted('基本信息', [info('手机号', '13900000000', 'tel'), info('电话号码', '13700000000', 'tel')])), /同义词条内容冲突/);
+  assert.throws(() => mergeExtraction(base, { sections: [{ title: '基本信息', records: [{ fields: [info('姓名', '成员甲')] }, { fields: [info('姓名', '成员乙')] }] }] }), /本人一条记录/);
+  let calls = 0;
+  await extractProfile('技术证书：新的虚构资格', config, 'fake-key', addProfileField(base, 'personal', 0, '技术资格', '旧的私有值'), async (_, options) => {
+    calls++;
+    const body = JSON.parse(options.body), payload = JSON.parse(body.messages[1].content);
+    assert.match(body.messages[0].content, /语义相同的板块标题和小标题/);
+    assert.match(body.messages[0].content, /主邮箱与备用邮箱/);
+    assert.ok(payload.outline.find(s => s.title === '基本信息').fields.includes('技术资格'));
+    for (const secret of ['旧的私有值', '林知夏', 'fake-key']) assert.equal(options.body.includes(secret), false);
+    return response(JSON.stringify(extracted('基本信息', [info('技术资格', '新的虚构资格')])));
+  });
+  assert.equal(calls, 1);
+  assert.deepEqual(base, original);
 });
 
 test('REQ-20261009-03 空文本与超长输入不请求；HTTP、非法 JSON、空/重复/注入结构整体拒绝', async () => {
@@ -208,7 +300,7 @@ test('REQ-20261010-01 日期原文不污染标准或自定义 month 字段，不
   assert.equal(fields.find(f => f.label === '转正日期').value, '2025-10');
   assert.equal(fields.find(f => f.label === '转正日期（原文）').value, '待定');
   assert.equal(fields.some(f => f.label.startsWith('结束')), false);
-  assert.equal(merged.conflicts, 1);
+  assert.equal(merged.skippedDeleted, 1);
   assert.equal(mergeExtraction(merged.profile, output).added, 0);
   assert.deepEqual(validateProfile(merged.profile), merged.profile);
 });
