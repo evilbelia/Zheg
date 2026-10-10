@@ -152,6 +152,10 @@ test('打包扩展：MV3、存储、真实注入通信、填写和页面切换�
     await form.bringToFront();
     await panel.getByRole('button', { name: '识别表单', exact: true }).click();
     await expect(panel.locator('.preview-stats strong').first()).toHaveText('22');
+    const schoolSource = panel.locator('.preview-row').filter({ hasText: '所在高校 *' }).first();
+    await expect(schoolSource.locator('.section-select')).toHaveValue('education');
+    await expect(schoolSource.locator('.field-select')).toHaveValue('education[].school::0');
+    expect(await schoolSource.locator('.field-select option').allTextContents()).not.toContain('姓名');
     await panel.getByRole('button', { name: '确认填写', exact: true }).click();
     await expect(form.locator('#application-form input[name=applicantName]')).toHaveValue('林知夏');
     await expect(form.locator('#application-form input[name=school2]')).toHaveValue('杭州电子科技大学');

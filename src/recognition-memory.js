@@ -1,5 +1,5 @@
 import { compatibleDefinition, profileSchema } from './profile.js';
-import { normalize, sectionKind } from './matching.js';
+import { normalize, sectionKind, mappingIndex } from './matching.js';
 import { safeText } from './model.js';
 
 const LIMIT = 500;
@@ -48,7 +48,7 @@ export function applyMemory(rows, memory, origin, profile) {
     const id = identity(row, origin, profile);
     const entry = id && entries.find(e => signature(e) === signature(id));
     if (!entry || !compatibleDefinition(row, schema.get(entry.path))) return row;
-    return { ...row, path: entry.path, source: '识别记忆', selected: false };
+    return { ...row, path: entry.path, index: mappingIndex(rows, row, entry.path, profile), source: '识别记忆', selected: false };
   });
 }
 export function learnMappings(memory, rows, origin, profile) {

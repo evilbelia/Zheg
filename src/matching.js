@@ -9,7 +9,7 @@ export function sectionKind(section) {
 }
 
 export function groupForSection(section, profile) {
-  return profileSections(profile).find(s => normalize(s.title) === normalize(section))?.id ?? sectionKind(section);
+  return (profile ? profileSections(profile).find(s => normalize(s.title) === normalize(section))?.id : null) ?? sectionKind(section);
 }
 export function matchFields(fields, profile) {
   const counts = Object.fromEntries(profileSections(profile).filter(s => s.id !== 'personal').map(s => [s.id, new Map()]));
@@ -25,9 +25,24 @@ export function matchFields(fields, profile) {
     const candidates = schema.filter(item => compatibleDefinition(field, item) && item.aliases.some(a => normalize(a) === normalize(field.label)));
     const scoped = candidates.filter(item => !kind || item.sectionId === kind || item.sectionId === 'personal');
     const path = scoped.length === 1 ? scoped[0].path : '';
+    const groupIndex = index;
+    if (schema.find(s => s.path === path)?.sectionId === 'personal') index = 0;
     const value = readValue(profile, path, index);
-    return { ...field, path, index, source: path ? '规则匹配' : '需要确认', selected: Boolean(path && value), status: '', override: false };
+    return { ...field, path, index, groupIndex, source: path ? '规则匹配' : '需要确认', selected: Boolean(path && value), status: '', override: false };
   });
+}
+
+export function needsModelReview(row, profile) {
+  return !row.path || !fillValue(row, readValue(profile, row.path, row.index)).ok;
+}
+
+export function mappingIndex(rows, row, path, profile) {
+  const schema = profileSchema(profile), def = schema.find(s => s.path === path);
+  const section = def?.sectionId ?? def?.path.split('.')[0].replace('[]', '');
+  if (section === 'personal') return 0;
+  if (section === groupForSection(row.section, profile)) return row.groupIndex ?? row.index;
+  const groups = [...new Set(rows.filter(r => groupForSection(r.section, profile) === section || schema.find(s => s.path === r.path)?.sectionId === section || r.id === row.id).map(r => r.groupId))];
+  return groups.indexOf(row.groupId);
 }
 
 export function fillValue(field, value) {

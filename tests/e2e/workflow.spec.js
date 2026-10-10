@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { sampleProfile, addProfileField } from '../../src/profile.js';
 
 const runtimeErrors = new WeakMap();
 test.beforeEach(async ({ page }) => {
@@ -23,7 +24,8 @@ test('完整演示：识别不填、上下文映射、多段经历、手动映�
   const nameRow = page.locator('.preview-row').filter({ has: page.getByRole('checkbox', { name: '填写 姓名 *', exact: true }) });
   await nameRow.locator('input[type=checkbox]').uncheck();
   const preferred = page.locator('.preview-row').filter({ hasText: '你的称呼' });
-  await preferred.locator('select').selectOption('personal.fullName::0');
+  await preferred.locator('.section-select').selectOption('personal');
+  await preferred.locator('.field-select').selectOption('personal.fullName::0');
   await page.getByRole('button', { name: '确认填写', exact: true }).click();
   await expect(page.locator('#application-form input[name=applicantName]')).toHaveValue('');
   await expect(page.locator('#application-form input[name=preferredName]')).toHaveValue('林知夏');
@@ -49,6 +51,98 @@ test('已有值保护与显式覆盖；切换教育记录', async ({ page }) => 
   await nameRow.getByRole('checkbox', { name: '覆盖网页已有内容' }).check();
   await page.getByRole('button', { name: '确认填写', exact: true }).click();
   await expect(page.locator('#application-form input[name=applicantName]')).toHaveValue('林知夏');
+});
+
+test('REQ-20261010-03 规则空值进入模型复核，缺失记录明确显示，板块选择和记录切换取值一致', async ({ page }) => {
+  await page.goto('/');
+  let fixture = sampleProfile();
+  fixture.education = fixture.education.slice(0, 1);
+  fixture.education[0].major = '';
+  fixture.education[0].startDate = '';
+  fixture = addProfileField(fixture, 'education', 0, '专业方向', '虚构方向');
+  const extraPath = `education[].extra.${fixture.education[0].extraFields[0].id}`;
+  await page.evaluate(profile => localStorage.setItem('zheg:profile', JSON.stringify(profile)), fixture);
+  await page.reload();
+  await page.locator('input[name=school2]').evaluate(el => {
+    const label = document.createElement('label');
+    label.textContent = '本人姓名';
+    label.appendChild(document.createElement('input')).name = 'secondPersonalName';
+    el.closest('section').appendChild(label);
+  });
+  await configureCustom(page);
+  let calls = 0;
+  await page.route('https://model.example/**', async route => {
+    calls++;
+    const body = route.request().postDataJSON(), input = JSON.parse(body.messages[1].content);
+    for (const secret of ['浙江大学', '虚构方向', '林知夏', 'test-secret']) expect(JSON.stringify(body)).not.toContain(secret);
+    expect(input.fields.filter(f => f.label === '所在高校 *')).toHaveLength(1); // Only the missing second record.
+    expect(input.fields.filter(f => f.label === '专业名称')).toHaveLength(2);
+    expect(input.fields.some(f => f.label === '开始时间')).toBe(true); // Empty saved date also gets reviewed.
+    let majorSeen = false;
+    const mappings = input.fields.map(f => {
+      const firstMajor = f.label === '专业名称' && !majorSeen;
+      if (f.label === '专业名称') majorSeen = true;
+      return { fieldId: f.fieldId, profilePath: firstMajor ? extraPath : f.label === '本人姓名' ? 'personal.fullName' : null };
+    });
+    await route.fulfill({ contentType: 'application/json', body: completion(JSON.stringify({ mappings })) });
+  });
+  await page.getByRole('button', { name: '识别表单', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('智能识别完成');
+  expect(calls).toBe(1);
+  const groups = page.locator('.preview-group').filter({ has: page.getByRole('heading', { name: '教育经历', exact: true }) });
+  const firstSchool = groups.nth(0).locator('.preview-row').filter({ hasText: '所在高校 *' });
+  const major = groups.nth(0).locator('.preview-row').filter({ hasText: '专业名称' });
+  const secondSchool = groups.nth(1).locator('.preview-row').filter({ hasText: '所在高校 *' });
+  await expect(firstSchool.locator('.value-preview')).toContainText('浙江大学');
+  await expect(major).toContainText('模型建议');
+  await expect(major.locator('.value-preview')).toContainText('虚构方向');
+  await expect(major.locator('input[type=checkbox]')).not.toBeChecked();
+  await expect(major.locator('.section-select')).toHaveValue('education');
+  await expect(major.locator('.field-select')).toHaveValue(`${extraPath}::0`);
+  await expect(secondSchool.locator('.value-preview')).toContainText('无对应档案记录');
+  await expect(secondSchool.locator('.field-select')).toHaveValue('');
+  await expect(groups.nth(1).locator('.record-picker')).toHaveValue('');
+  await expect(secondSchool.locator('input[type=checkbox]')).not.toBeChecked();
+  const personal = groups.nth(1).locator('.preview-row').filter({ hasText: '本人姓名' });
+  await expect(personal.locator('.value-preview')).toContainText('林知夏');
+  await expect(personal.locator('.field-select')).toHaveValue('personal.fullName::0');
+  const date = groups.nth(0).locator('.preview-row').filter({ hasText: '开始时间' });
+  await expect(date.locator('.value-preview')).toContainText('已保存档案中此字段为空');
+  expect(await date.locator('.section-select option').allTextContents()).not.toContain('基本信息');
+  await expect(page.locator('#application-form input[name=eduStart1]')).toHaveValue('');
+  // The field menu only contains compatible education fields, grouped by record.
+  expect(await major.locator('.field-select option').allTextContents()).not.toContain('姓名');
+  await expect(major.locator('.field-select optgroup')).toHaveCount(1);
+  await major.locator('.section-select').selectOption('personal');
+  await expect(major.locator('.field-select')).toHaveValue('');
+  await expect(major.locator('input[type=checkbox]')).not.toBeChecked();
+  expect(await major.locator('.field-select option').allTextContents()).not.toContain('学校');
+  await major.locator('.field-select').selectOption('personal.fullName::0');
+  await expect(major.locator('.value-preview')).toContainText('林知夏');
+  // Changing the education group must not change the manually chosen personal source.
+  await groups.nth(0).locator('.record-picker').selectOption('0');
+  await expect(major.locator('.field-select')).toHaveValue('personal.fullName::0');
+  await groups.nth(1).locator('.record-picker').selectOption('0');
+  await expect(secondSchool.locator('.value-preview')).toContainText('浙江大学');
+  await expect(secondSchool.locator('.field-select')).toHaveValue('education[].school::0');
+  await expect(secondSchool.locator('input[type=checkbox]')).toBeChecked();
+  await page.getByRole('button', { name: '确认填写', exact: true }).click();
+  await expect(page.locator('#application-form input[name=school2]')).toHaveValue('浙江大学');
+  await expect(page.locator('#application-form input[name=major1]')).toHaveValue('林知夏');
+  await expect(page.locator('#application-form input[name=eduStart1]')).toHaveValue('');
+  await page.setViewportSize({ width: 375, height: 812 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('button', { name: '智能识别', exact: true }).click();
+  await page.getByRole('button', { name: '清空识别记忆' }).click();
+  await expect(page.getByRole('status')).toContainText('识别记忆已清空');
+  await page.getByRole('button', { name: '填写预览', exact: true }).click();
+  await page.route('https://model.example/**', route => route.fulfill({ status: 500, body: 'mock failure' }));
+  await page.getByRole('button', { name: '重新识别', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('HTTP 500');
+  await expect(firstSchool.locator('.value-preview')).toContainText('浙江大学');
+  await expect(secondSchool.locator('.value-preview')).toContainText('无对应档案记录');
+  await expect(major.locator('.field-select')).toHaveValue('education[].major::0');
+  await expect(major.locator('.value-preview')).toContainText('已保存档案中此字段为空');
 });
 
 test('档案保存刷新恢复；旧导入导出和演示载入入口移除', async ({ page }) => {
@@ -232,7 +326,8 @@ test('关闭自动智能识别立即生效并持久化；手动成功映射仍�
   const row = page.locator('.preview-row').filter({ hasText: '你的称呼' });
   await expect(row).toContainText('需要确认');
   await expect(page.locator('#infer')).toHaveCount(0);
-  await row.locator('select').selectOption('personal.fullName::0');
+  await row.locator('.section-select').selectOption('personal');
+  await row.locator('.field-select').selectOption('personal.fullName::0');
   await page.getByRole('button', { name: '确认填写', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('填写完成');
   await page.getByRole('button', { name: '重新识别', exact: true }).click();
@@ -255,7 +350,8 @@ test('全匹配不调用模型；自动模型失败仍可手动填写', async ({
   await page.getByRole('button', { name: '识别表单', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('HTTP 500');
   await expect(page.getByRole('status')).not.toContainText('test-secret');
-  await page.locator('.preview-row').filter({ hasText: '你的称呼' }).locator('select').selectOption('personal.fullName::0');
+  await page.locator('.preview-row').filter({ hasText: '你的称呼' }).locator('.section-select').selectOption('personal');
+  await page.locator('.preview-row').filter({ hasText: '你的称呼' }).locator('.field-select').selectOption('personal.fullName::0');
   await page.getByRole('button', { name: '确认填写' }).click();
   await expect(page.locator('input[name=preferredName]')).toHaveValue('林知夏');
   expect(calls).toBe(1);

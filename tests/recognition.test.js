@@ -65,6 +65,17 @@ test('REQ-20261009-02 非法 / 冲突记忆拒绝，敏感与未知分组不积�
   assert.equal(learnMappings(emptyMemory(), entries, origin).entries.length, 500);
 });
 
+test('REQ-20261010-03 记忆映射本人字段不使用第二段经历索引', () => {
+  const profile = sampleProfile();
+  const memory = learnMappings(emptyMemory(), [confirmed({ label: '联系称呼', path: 'personal.fullName' })], origin, profile);
+  const rows = matchFields([field({ label: '学校', groupId: 'g1' }), field({ label: '联系称呼', id: 'f2', groupId: 'g2' })], profile);
+  const result = applyMemory(rows, memory, origin, profile);
+  assert.equal(result[1].index, 0);
+  assert.equal(result[1].groupIndex, 1);
+  assert.equal(result[1].path, 'personal.fullName');
+  assert.equal(result[1].selected, false);
+});
+
 test('REQ-20261009-02 连接测试最小请求，密钥只在鉴权头，空字段不调用模型', async () => {
   let calls = 0;
   const config = normalizeConfig();

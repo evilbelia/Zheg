@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sampleProfile, emptyProfile, validateProfile, readValue, compatible } from '../src/profile.js';
-import { matchFields, fillValue } from '../src/matching.js';
+import { matchFields, fillValue, needsModelReview, mappingIndex } from '../src/matching.js';
 import { modelPayload, validateMappings, inferMappings, endpointURL } from '../src/model.js';
 
 const field = (label, section = '未分组', type = 'text', id = 'f1', groupId = 'g1') => ({ id, label, section, type, groupId, options: [], hasValue: false });
@@ -38,6 +38,37 @@ test('控件类型限制、日期转换和选项唯一匹配', () => {
   assert.deepEqual(fillValue(select, '硕士'), { ok: true, value: 'master' });
   assert.equal(fillValue(select, '本科').ok, false);
   assert.equal(fillValue({ ...select, options: [...select.options, { label: '硕士', value: '2' }] }, '硕士').ok, false);
+});
+test('REQ-20261010-03 基本信息不继承经历序号，缺失记录不自动复用第一条', () => {
+  const profile = sampleProfile();
+  profile.education = profile.education.slice(0, 1);
+  const rows = matchFields([
+    field('学校', '教育经历', 'text', 'f1', 'g1'),
+    field('学校', '教育经历', 'text', 'f2', 'g2'),
+    field('姓名', '教育经历', 'text', 'f3', 'g2'),
+  ], profile);
+  assert.equal(rows[1].groupIndex, 1);
+  assert.equal(rows[1].index, 1);
+  assert.equal(rows[1].selected, false);
+  assert.equal(readValue(profile, rows[1].path, rows[1].index), '');
+  assert.equal(rows[2].index, 0);
+  assert.equal(readValue(profile, rows[2].path, rows[2].index), '林知夏');
+  assert.equal(needsModelReview(rows[0], profile), false);
+  assert.equal(needsModelReview(rows[1], profile), true);
+  assert.equal(needsModelReview(rows[2], profile), false);
+  assert.equal(mappingIndex(rows, rows[1], 'education[].school', profile), 1);
+  assert.equal(mappingIndex(rows, rows[1], 'personal.fullName', profile), 0);
+});
+test('REQ-20261010-03 空值和不能转换选项进入模型复核，跨板块模型索引按目标分配', () => {
+  const profile = sampleProfile();
+  profile.education[0].major = '';
+  const rows = matchFields([field('专业', '教育经历'), { ...field('学历', '教育经历', 'select', 'f2'), options: [{ label: '本科', value: 'b' }] }, field('x', '未分组', 'text', 'f3', 'g3')], profile);
+  assert.equal(needsModelReview(rows[0], profile), true);
+  assert.equal(needsModelReview(rows[1], profile), true);
+  assert.equal(needsModelReview(rows[2], profile), true);
+  assert.equal(mappingIndex(rows, rows[2], 'education[].school', profile), 1);
+  assert.equal(mappingIndex(rows, rows[2], 'internships[].company', profile), 0);
+  assert.equal(mappingIndex(rows, rows[2], 'personal.fullName', profile), 0);
 });
 test('模型 payload 是明确白名单，不含档案和已有输入、URL、HTML', () => {
   const f = { ...field('联系邮箱：private@example.com', '张三的教育经历'), value: '13812345678', existingValue: '张三', pageURL: 'https://private.example.com', html: '<input>' };
